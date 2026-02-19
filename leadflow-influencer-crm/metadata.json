@@ -1,0 +1,8 @@
+
+{
+  "name": "LeadFlow Influencer CRM",
+  "description": "A comprehensive SaaS platform for influencer marketing, lead acquisition, and automated outreach management.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CreatorScan 数据看板</title>
+    <style>
+        :root {
+            --primary-color: #1890ff;
+            --success-color: #52c41a;
+            --warning-color: #faad14;
+            --danger-color: #ff4d4f;
+            --text-color: #333;
+            --bg-color: #f0f2f5;
+            --card-bg: #fff;
+            --border-color: #e8e8e8;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: var(--card-bg);
+            padding: 24px;
+            border-radius: 8px;
+            box-shadow: 0 1px 2px -2px rgba(0, 0, 0, 0.16), 0 3px 6px 0 rgba(0, 0, 0, 0.12), 0 5px 12px 4px rgba(0, 0, 0, 0.09);
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+            color: #000000d9;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        #storage-usage {
+            font-size: 13px;
+            color: #8c8c8c;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab {
+            padding: 12px 24px;
+            cursor: pointer;
+            margin-right: 2px;
+            border-bottom: 2px solid transparent;
+            font-size: 14px;
+            font-weight: 500;
+            color: #595959;
+            transition: all 0.3s;
+        }
+
+        .tab:hover {
+            color: var(--primary-color);
+        }
+
+        .tab.active {
+            color: var(--primary-color);
+            border-bottom-color: var(--primary-color);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Actions Bar */
+        .actions {
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* Buttons */
+        button {
+            padding: 6px 16px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+            box-shadow: 0 2px 0 rgba(0,0,0,0.015);
+            outline: none;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background-color: #40a9ff;
+            border-color: #40a9ff;
+        }
+
+        .btn-success {
+            background-color: var(--success-color);
+            border-color: var(--success-color);
+            color: #fff;
+        }
+        .btn-success:hover {
+            background-color: #73d13d;
+            border-color: #73d13d;
+        }
+
+        .btn-danger {
+            background-color: #fff;
+            border-color: var(--danger-color);
+            color: var(--danger-color);
+        }
+        .btn-danger:hover {
+            background-color: #fff1f0;
+            border-color: #ff7875;
+        }
+
+        .btn-sm {
+            padding: 4px 12px;
+            font-size: 12px;
+        }
+
+        /* Table */
+        .table-container {
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+        }
+
+        th {
+            background-color: #fafafa;
+            font-weight: 600;
+            color: #262626;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        tr:hover {
+            background-color: #e6f7ff;
+        }
+
+        .avatar-img {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 1px solid #eee;
+        }
+
+        .link-cell a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        .link-cell a:hover {
+            text-decoration: underline;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px;
+            color: #bfbfbf;
+            font-size: 14px;
+        }
+
+        .stats-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background-color: #e6f7ff;
+            color: var(--primary-color);
+            font-size: 12px;
+            font-weight: normal;
+            margin-left: 8px;
+            border: 1px solid #91d5ff;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.45);
+            z-index: 1000;
+            backdrop-filter: blur(2px);
+        }
+        
+        .modal-content {
+            background: white;
+            width: 480px;
+            margin: 10vh auto;
+            padding: 24px;
+            border-radius: 8px;
+            box-shadow: 0 3px 6px -4px rgba(0, 0, 0, 0.12), 0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 9px 28px 8px rgba(0, 0, 0, 0.05);
+            animation: slideDown 0.3s ease-out;
+        }
+
+        @keyframes slideDown {
+            from { transform: translateY(-20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal h3 {
+            margin-top: 0;
+            margin-bottom: 16px;
+            font-size: 16px;
+            color: #000000d9;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #262626;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            box-sizing: border-box;
+            transition: all 0.3s;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+            outline: none;
+        }
+
+        textarea.form-control {
+            resize: vertical;
+            min-height: 120px;
+            font-family: monospace;
+        }
+
+        .modal-footer {
+            text-align: right;
+            margin-top: 24px;
+        }
+
+        /* Checkbox */
+        input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>CreatorScan 数据看板</h1>
+        <div class="header-actions">
+             <span id="storage-usage"></span>
+             <button id="open-settings" class="btn-sm btn-danger" style="color: #666; border-color: #d9d9d9;">⚙️ 设置</button>
+        </div>
+    </header>
+
+    <div class="tabs">
+        <div class="tab active" data-target="batch-tab">TikTok 任务数据 <span id="batch-badge" class="stats-badge">0</span></div>
+        <div class="tab" data-target="imported-tab">导入的 URL <span id="imported-badge" class="stats-badge">0</span></div>
+        <div class="tab" data-target="manual-tab">手动采集 <span id="manual-badge" class="stats-badge">0</span></div>
+    </div>
+
+    <!-- Batch Scrape Content -->
+    <div id="batch-tab" class="tab-content active">
+        <div class="actions">
+            <button id="refresh-batch" class="btn-primary">🔄 刷新</button>
+            <button id="enrich-batch" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">🔍 深度挖掘 (补全详情)</button>
+            <button id="stop-enrich-batch" class="btn-danger" style="display: none;">⏹ 停止挖掘</button>
+            <button id="delete-selected-batch" class="btn-danger" style="display: none;">🗑 删除选中</button>
+            <button id="export-batch" class="btn-success">📤 导出 CSV</button>
+            <button id="export-batch-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
+            <button id="push-batch" class="btn-primary" style="background-color: #fa8c16; border-color: #fa8c16;">☁️ 推送至服务器</button>
+            <button id="clear-batch" class="btn-danger">🧹 清空所有</button>
+        </div>
+        <div class="table-container">
+            <table id="batch-table">
+                <thead>
+                    <tr>
+                        <th style="width: 30px;"><input type="checkbox" id="batch-select-all"></th>
+                        <th>头像</th>
+                        <th>昵称</th>
+                        <th>Handle (@ID)</th>
+                        <th>粉丝数</th>
+                        <th>邮箱</th>
+                        <th>外部链接</th>
+                        <th>签名</th>
+                        <th>平台</th>
+                        <th>采集时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Data will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+        <div id="batch-empty" class="empty-state" style="display: none;">暂无任务采集数据</div>
+    </div>
+
+    <!-- Imported URLs Content -->
+    <div id="imported-tab" class="tab-content">
+        <div class="actions">
+            <button id="refresh-imported" class="btn-primary">🔄 刷新</button>
+            <button id="import-urls" class="btn-primary" style="background-color: #722ed1; border-color: #722ed1;">📥 导入 URL</button>
+            <button id="enrich-imported" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">🔍 深度挖掘 (补全详情)</button>
+            <button id="stop-enrich-imported" class="btn-danger" style="display: none;">⏹ 停止挖掘</button>
+            <button id="delete-selected-imported" class="btn-danger" style="display: none;">🗑 删除选中</button>
+            <button id="export-imported" class="btn-success">📤 导出 CSV</button>
+            <button id="export-imported-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
+            <button id="push-imported" class="btn-primary" style="background-color: #fa8c16; border-color: #fa8c16;">☁️ 推送至服务器</button>
+            <button id="clear-imported" class="btn-danger">🧹 清空所有</button>
+        </div>
+        <div class="table-container">
+            <table id="imported-table">
+                <thead>
+                    <tr>
+                        <th style="width: 30px;"><input type="checkbox" id="imported-select-all"></th>
+                        <th>头像</th>
+                        <th>昵称</th>
+                        <th>Handle (@ID)</th>
+                        <th>粉丝数</th>
+                        <th>邮箱</th>
+                        <th>外部链接</th>
+                        <th>签名</th>
+                        <th>平台</th>
+                        <th>采集时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Data will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+        <div id="imported-empty" class="empty-state" style="display: none;">暂无导入的 URL 数据</div>
+    </div>
+
+    <!-- Manual Scrape Content -->
+    <div id="manual-tab" class="tab-content">
+        <div class="actions">
+            <button id="refresh-manual" class="btn-primary">🔄 刷新</button>
+            <button id="delete-selected-manual" class="btn-danger" style="display: none;">🗑 删除选中</button>
+            <button id="export-manual" class="btn-success">📤 导出 CSV</button>
+            <button id="export-manual-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
+            <button id="clear-manual" class="btn-danger">🧹 清空所有</button>
+        </div>
+        <div class="table-container">
+            <table id="manual-table">
+                <thead>
+                    <tr>
+                        <th style="width: 30px;"><input type="checkbox" id="manual-select-all"></th>
+                        <th>平台</th>
+                        <th>邮箱</th>
+                        <th>粉丝数</th>
+                        <th>外部链接</th>
+                        <th>个人主页</th>
+                        <th>采集时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Data will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+        <div id="manual-empty" class="empty-state" style="display: none;">暂无手动采集数据</div>
+    </div>
+</div>
+
+<script src="xlsx.mini.min.js"></script>
+<script src="results.js"></script>
+
+<!-- Settings Modal -->
+<div id="settings-modal" class="modal">
+    <div class="modal-content">
+        <h3>⚙️ 设置</h3>
+        <div class="form-group">
+            <label>服务器 API Key</label>
+            <input type="text" id="api-key-input" class="form-control" placeholder="请输入 API Key">
+        </div>
+        <div class="form-group">
+             <label>服务器地址 URL</label>
+             <input type="text" id="server-url-input" class="form-control" placeholder="http://localhost:8090" value="http://localhost:8090">
+        </div>
+        <div class="modal-footer">
+            <button id="cancel-settings" class="btn-danger" style="margin-right:10px;">取消</button>
+            <button id="save-settings" class="btn-primary">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- Import Modal -->
+<div id="import-modal" class="modal">
+    <div class="modal-content" style="width: 500px;">
+        <h3>📥 导入 TikTok URL</h3>
+        <p style="margin-bottom:10px; color:#666; font-size:13px;">请粘贴个人主页链接（每行一个）。<br>示例: https://www.tiktok.com/@username</p>
+        <textarea id="import-urls-input" class="form-control"></textarea>
+        <div class="modal-footer">
+            <button id="cancel-import" class="btn-danger" style="margin-right:10px;">取消</button>
+            <button id="confirm-import" class="btn-primary">导入并添加到列表</button>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>

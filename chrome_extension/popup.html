@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CreatorScan</title>
+    <style>
+        :root {
+            --primary: #FF0050; /* TikTok Red */
+            --primary-hover: #D60043;
+            --bg: #F8F9FA;
+            --card-bg: #FFFFFF;
+            --text-main: #333333;
+            --text-sec: #666666;
+            --border: #E5E7EB;
+        }
+
+        body {
+            width: 380px;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+        }
+
+        /* Header */
+        .header {
+            background: white;
+            padding: 16px 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 800;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo span {
+            color: var(--primary);
+        }
+
+        /* Navigation */
+        .nav {
+            display: flex;
+            padding: 10px 20px 0;
+            background: white;
+            border-bottom: 1px solid var(--border);
+            gap: 20px;
+        }
+
+        .nav-item {
+            padding-bottom: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-sec);
+            cursor: pointer;
+            position: relative;
+            transition: color 0.2s;
+        }
+
+        .nav-item.active {
+            color: var(--primary);
+        }
+
+        .nav-item.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--primary);
+        }
+
+        /* Content */
+        .container {
+            padding: 20px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-sec);
+            margin-bottom: 6px;
+        }
+
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+            font-family: inherit;
+        }
+
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .form-row {
+            display: flex;
+            gap: 12px;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        /* Buttons */
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 2px 8px rgba(255, 0, 80, 0.2);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: white;
+            border: 1px solid var(--border);
+            color: var(--text-sec);
+        }
+
+        .btn-secondary:hover {
+            background: #f5f5f5;
+        }
+
+        /* Task List */
+        .task-card {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            border: 1px solid var(--border);
+            transition: transform 0.2s;
+        }
+
+        .task-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+        }
+
+        .task-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .task-title {
+            font-weight: 700;
+            font-size: 15px;
+            color: var(--text-main);
+            margin-bottom: 4px;
+        }
+
+        .task-meta {
+            font-size: 12px;
+            color: var(--text-sec);
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .status-pending { background: #E5E7EB; color: #666; }
+        .status-running { background: #DBEAFE; color: #1E40AF; }
+        .status-completed { background: #D1FAE5; color: #065F46; }
+
+        .progress-bar {
+            height: 6px;
+            background: #F3F4F6;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 12px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--primary);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--text-sec);
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--text-main);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-sec);
+            margin-top: 4px;
+        }
+
+        /* Custom Select */
+        .custom-select-container {
+            position: relative;
+            width: 100%;
+        }
+
+        .select-trigger {
+            padding: 10px;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .select-trigger::after {
+            content: '▼';
+            font-size: 10px;
+            color: var(--text-sec);
+        }
+
+        .select-options {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-top: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: none;
+        }
+
+        .select-options.show {
+            display: block;
+        }
+
+        .select-option {
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .select-option:hover {
+            background-color: var(--bg);
+        }
+
+        .select-option input[type="checkbox"] {
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo">
+            <span>⚡️</span> CreatorScan
+        </div>
+        <div style="font-size: 12px; color: #999;" id="version">v1.1</div>
+    </div>
+
+    <div class="nav">
+        <div class="nav-item active" data-tab="tasks">任务管理</div>
+        <div class="nav-item" data-tab="create">新建任务</div>
+        <div class="nav-item" data-tab="data">数据统计</div>
+    </div>
+
+    <!-- Task List View -->
+    <div id="view-tasks" class="container">
+        <div id="task-list">
+            <!-- Tasks will be injected here -->
+        </div>
+        
+        <div id="empty-tasks" class="empty-state hidden">
+            <div class="empty-icon">📝</div>
+            <h3>暂无任务</h3>
+            <p>点击“新建任务”开始批量采集</p>
+        </div>
+    </div>
+
+    <!-- Create Task View -->
+    <div id="view-create" class="container hidden">
+        <div class="form-group">
+            <label class="form-label">选择平台</label>
+            <select id="platform" class="form-select">
+                <option value="tiktok">TikTok</option>
+                <option value="instagram" disabled>Instagram (Coming Soon)</option>
+                <option value="youtube" disabled>YouTube (Coming Soon)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">关键词列表 (每行一个)</label>
+            <textarea id="keywords" class="form-textarea" rows="5" placeholder="例如：
+fashion trends
+makeup tutorial
+funny cats"></textarea>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label class="form-label">并发窗口数</label>
+                <input type="number" id="concurrency" class="form-input" value="1" min="1" max="5">
+            </div>
+            <div class="form-group">
+                <label class="form-label">每个词采集页数</label>
+                <input type="number" id="pageLimit" class="form-input" value="10" min="1">
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label class="form-label">最小粉丝数</label>
+                <input type="number" id="minFollowers" class="form-input" placeholder="不限">
+            </div>
+            <div class="form-group">
+                <label class="form-label">最大粉丝数</label>
+                <input type="number" id="maxFollowers" class="form-input" placeholder="不限">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">语言筛选 (可选)</label>
+            <div id="language-selector" class="custom-select-container">
+                <div class="select-trigger" id="lang-trigger">不限 (点击选择)</div>
+                <div class="select-options" id="lang-options">
+                    <!-- JS Injected Options -->
+                </div>
+            </div>
+        </div>
+
+        <button id="btn-create-task" class="btn btn-primary">创建并开始任务</button>
+    </div>
+
+    <!-- Data View -->
+    <div id="view-data" class="container hidden">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="total-profiles">0</div>
+                <div class="stat-label">总采集数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="today-profiles">0</div>
+                <div class="stat-label">今日新增</div>
+            </div>
+        </div>
+
+        <button id="btn-open-dashboard" class="btn btn-secondary" style="margin-bottom: 12px;">
+            打开完整数据看板
+        </button>
+        
+        <button id="btn-export-csv" class="btn btn-primary" style="background-color: #25D366;">
+            导出 CSV
+        </button>
+        
+        <div style="margin-top: 20px; text-align: center;">
+            <button id="btn-clear-data" style="background: none; border: none; color: #999; text-decoration: underline; cursor: pointer; font-size: 12px;">清空所有数据</button>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
