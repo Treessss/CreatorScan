@@ -6,10 +6,40 @@ let lastApiResponseTime = Date.now();
 let isTaskScraping = false;
 let taskConfig = null;
 let taskInterceptCount = 0;
+let taskSeenProfileIds = new Set();
+
+function csToast(message) {
+    const id = 'cs-content-toast';
+    let el = document.getElementById(id);
+    if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        el.style.position = 'fixed';
+        el.style.left = '50%';
+        el.style.bottom = '24px';
+        el.style.transform = 'translateX(-50%)';
+        el.style.background = '#0f172a';
+        el.style.color = '#fff';
+        el.style.padding = '10px 14px';
+        el.style.borderRadius = '10px';
+        el.style.fontSize = '12px';
+        el.style.zIndex = '999999';
+        el.style.boxShadow = '0 10px 28px rgba(0,0,0,.35)';
+        document.body.appendChild(el);
+    }
+    el.textContent = String(message);
+    el.style.opacity = '1';
+    window.clearTimeout(el._csTimer);
+    el._csTimer = window.setTimeout(() => {
+        if (el) el.style.opacity = '0';
+    }, 2200);
+}
 
 // Initialize
-// Inject interceptor immediately to catch early requests
-injectScript();
+// Inject interceptor immediately on TikTok pages to catch early requests
+if (window.location.hostname.includes('tiktok.com')) {
+    injectScript();
+}
 
 // Restore state from sessionStorage if available (handles reloads before background reconnects)
 const savedTaskConfig = sessionStorage.getItem('creatorScanTaskConfig');
@@ -53,12 +83,15 @@ function startTaskScraping(config) {
     // NOTE: If we are restoring from session, we might want to preserve the local count?
     // But background sends the authoritative 'pageCount' from storage.
     taskInterceptCount = config.initialPageCount || 0;
+    taskSeenProfileIds = new Set();
     
     // Save to session for reliability
     sessionStorage.setItem('creatorScanTaskConfig', JSON.stringify(config));
     
-    // 1. Inject Interceptor Script
-    injectScript();
+    // 1. Inject Interceptor Script (TikTok only)
+    if ((config.platform || detectPlatform()) === 'tiktok') {
+        injectScript();
+    }
     
     // 2. Start Loop
     if (!batchInterval) {
@@ -100,6 +133,11 @@ async function taskLoopStep() {
         return;
     }
     
+    if ((taskConfig.platform || detectPlatform()) !== 'tiktok') {
+        await runGenericTaskStep();
+        return;
+    }
+
     // Scroll Logic for Background Tabs
     // 1. Dispatch Wheel Event (Simulate mouse wheel)
     // Many SPAs listen to 'wheel' or 'touchmove' rather than just 'scroll' event
@@ -124,6 +162,103 @@ async function taskLoopStep() {
         // Manually dispatch scroll event as browsers might suppress it in background if layout didn't change enough
         window.dispatchEvent(new Event('scroll'));
     }, 100);
+}
+
+async function runGenericTaskStep() {
+    const platform = taskConfig.platform || detectPlatform();
+    taskInterceptCount++;
+
+    const profiles = collectGenericTaskProfiles(platform);
+    const newProfiles = profiles.filter(p => {
+        if (!p.id || taskSeenProfileIds.has(p.id)) return false;
+        taskSeenProfileIds.add(p.id);
+        return true;
+    });
+
+    if (newProfiles.length > 0) {
+        chrome.runtime.sendMessage({
+            action: 'saveTaskProfiles',
+            taskId: taskConfig.taskId,
+            keyword: taskConfig.keyword,
+            data: newProfiles
+        });
+    }
+
+    try {
+        chrome.runtime.sendMessage({
+            action: 'updateTaskProgress',
+            taskId: taskConfig.taskId,
+            keyword: taskConfig.keyword,
+            pageCount: taskInterceptCount
+        });
+    } catch (e) {
+        console.error('CreatorScan: Failed to send generic task progress', e);
+    }
+
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+function collectGenericTaskProfiles(platform) {
+    if (platform === 'instagram') return collectInstagramTaskProfiles();
+    if (platform === 'youtube') return collectYouTubeTaskProfiles();
+    return [];
+}
+
+function collectInstagramTaskProfiles() {
+    const profiles = [];
+    const anchors = Array.from(document.querySelectorAll('a[href^="/"]'));
+    const blockedRoots = new Set(['explore', 'accounts', 'reels', 'stories', 'direct', 'p', 'tv']);
+
+    anchors.forEach((a) => {
+        const href = a.getAttribute('href') || '';
+        const cleaned = href.split('?')[0];
+        const parts = cleaned.split('/').filter(Boolean);
+        if (parts.length !== 1) return;
+        const username = parts[0];
+        if (!username || blockedRoots.has(username.toLowerCase())) return;
+
+        const profileUrl = `https://www.instagram.com/${username}/`;
+        const name = (a.textContent || '').trim() || username;
+        profiles.push({
+            id: profileUrl,
+            uniqueId: username,
+            nickname: name,
+            platform: 'Instagram',
+            url: profileUrl,
+            timestamp: Date.now()
+        });
+    });
+
+    return profiles;
+}
+
+function collectYouTubeTaskProfiles() {
+    const profiles = [];
+    const anchors = Array.from(document.querySelectorAll('a[href*="/@"], a[href*="/channel/"]'));
+
+    anchors.forEach((a) => {
+        const rawHref = a.getAttribute('href') || '';
+        if (!rawHref.startsWith('/@') && !rawHref.startsWith('/channel/')) return;
+        const url = `https://www.youtube.com${rawHref.split('?')[0]}`;
+
+        let uniqueId = rawHref.split('/').filter(Boolean).slice(1).join('_');
+        if (rawHref.startsWith('/@')) {
+            uniqueId = rawHref.split('/')[1]?.replace('@', '') || uniqueId;
+        } else if (rawHref.startsWith('/channel/')) {
+            uniqueId = rawHref.split('/')[2] || uniqueId;
+        }
+        const name = (a.textContent || '').trim() || uniqueId;
+        profiles.push({
+            id: url,
+            uniqueId,
+            nickname: name,
+            platform: 'YouTube',
+            url,
+            timestamp: Date.now()
+        });
+    });
+
+    return profiles;
 }
 
 
@@ -315,7 +450,15 @@ async function manualScrape(platform) {
         }
       }, 2000);
     }
-    alert('当前页面未检测到有效邮箱或挂链，或者不是红人主页。');
+    csToast('当前页面未检测到有效邮箱或挂链，或者不是红人主页。');
+  } else if (result === 'unsupported') {
+    if (btn) {
+      btn.innerText = '当前不支持';
+      setTimeout(() => {
+        if (btn) btn.innerText = '采集';
+      }, 2000);
+    }
+    csToast('当前页面暂不支持采集。');
   } else {
      if (btn) {
       btn.innerText = '❌ 失败';
@@ -343,6 +486,8 @@ async function tryScrape(platform) {
     data = await scrapeInstagram();
   } else if (platform === 'youtube') {
     data = await scrapeYouTube();
+  } else {
+    return 'unsupported';
   }
 
   // Logic: Scrape if has email OR has share links
@@ -693,7 +838,7 @@ async function batchLoopStep() {
             isBatchScraping: false,
             batchSessionCount: 0 // Reset as requested
         });
-        alert(`批量采集完成！本次采集 ${currentSessionCount} 个博主。`);
+        csToast(`批量采集完成！本次采集 ${currentSessionCount} 个博主。`);
         return;
     }
     

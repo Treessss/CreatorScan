@@ -1,41 +1,44 @@
 # CreatorScan API
 
-## Project Structure
-The project follows a Domain-Driven Design (DDD) structure:
+FastAPI backend for auth, users/sub-accounts, creators, email, templates, dashboard.
 
+## Prerequisites
+
+- Python 3.11+
+- PostgreSQL (or compatible DB URL)
+
+## Quick Start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8090
 ```
-creator_scan_api/
-├── app/
-│   ├── core/                    # Core Infrastructure (Config, DB, Security)
-│   ├── domains/                 # Business Domains
-│   │   ├── auth/                # Login & Token Logic
-│   │   ├── user/                # User Management (Master/Sub)
-│   │   ├── creator/             # Creator Data & Deduplication
-│   │   └── email/               # Email Sending & IMAP Sync
-│   └── main.py                  # Application Entry Point
-├── .env                         # Environment Variables
-└── requirements.txt
-```
 
-## Setup & Run
+API docs: `http://localhost:8090/docs`
 
-1.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+## Environment
 
-2.  **Configure Environment**:
-    - Copy `.env` and update credentials (DB, Secret Key).
-    - Ensure PostgreSQL database `creatorscan` exists.
+See `.env.example` for all variables.
 
-3.  **Run Server**:
-    ```bash
-    # Run from creator_scan_api/ directory
-    uvicorn app.main:app --reload
-    ```
+Important:
+- `PORT=8090` (recommended local default)
+- `SQLALCHEMY_DATABASE_URL` or Postgres component fields
+- `CORS_ORIGINS` should include frontend origin (`http://localhost:5173`)
 
-## API Features
-- **Auth**: `/token` (Login)
-- **Users**: Register Master (`/users/register`), Create Sub (`/users/sub`), Manage Config.
-- **Creators**: Push Data (`/creators/push`), List (`/creators/`).
-- **Emails**: Send Batch (`/emails/send`), Sync Replies (`/emails/sync`).
+## Main Endpoints
+
+- Auth: `POST /token`
+- Users: `/users/*`
+- Creators: `/creators/*`
+- Emails: `/emails/*`
+- Templates: `/templates/*`
+- Dashboard: `/dashboard/stats`
+
+## Notes
+
+- Current email logs contract:
+  - `GET /emails/logs` returns `{ items: [...], total: number }`
+- For production database migrations, use Alembic (configured in this repository).

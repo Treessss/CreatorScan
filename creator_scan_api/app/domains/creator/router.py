@@ -69,3 +69,17 @@ def delete_creator(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Creator not found or permission denied")
     return {"status": "success"}
+
+@router.patch("/{creator_id}/status", response_model=schemas.CreatorResponse)
+def update_creator_status(
+    creator_id: int,
+    payload: schemas.CreatorStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    creator = service.CreatorService.update_creator_status(db, creator_id, payload.status, current_user)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Creator not found or permission denied")
+
+    enriched = EmailService.enrich_creators_with_email_status(db, [creator])
+    return enriched[0]

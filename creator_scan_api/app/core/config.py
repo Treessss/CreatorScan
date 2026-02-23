@@ -1,11 +1,17 @@
 
 import os
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "CreatorScan API"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    ENV: str = "development"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8090
+    AUTO_CREATE_TABLES: bool = True
     
     SECRET_KEY: str = "YOUR_SECRET_KEY_CHANGE_ME_PLEASE_IN_PRODUCTION"
     ALGORITHM: str = "HS256"
@@ -17,9 +23,20 @@ class Settings(BaseSettings):
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_DB: str = "creatorscan"
     SQLALCHEMY_DATABASE_URL: str = ""
+    # Use comma-separated origins in env, e.g.
+    # CORS_ORIGINS=http://localhost:5173,chrome-extension://<EXTENSION_ID>
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ALLOW_CREDENTIALS: bool = True
+    CORS_ALLOW_ORIGIN_REGEX: str = r"chrome-extension://.*"
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env")
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, value):
+        if isinstance(value, str):
+            return [v.strip() for v in value.split(",") if v.strip()]
+        return value
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

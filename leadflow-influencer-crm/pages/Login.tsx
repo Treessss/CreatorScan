@@ -1,13 +1,22 @@
 
 import React, { useState } from 'react';
 import { authService } from '../services/api';
+import { useFeedback } from '../components/FeedbackProvider';
 
 const Login: React.FC<{ onLogin: (user: any) => void }> = ({ onLogin }) => {
+  const { notify } = useFeedback();
   const [role, setRole] = useState<'Member' | 'Admin'>('Member');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [require2FA, setRequire2FA] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const trialContact = import.meta.env.VITE_TRIAL_CONTACT || '请联系系统管理员开通试用账号';
+
+  const handleRequestTrial = () => {
+    notify(trialContact, 'info');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,7 +25,7 @@ const Login: React.FC<{ onLogin: (user: any) => void }> = ({ onLogin }) => {
     
     try {
       // 1. Get Token
-      const tokenData = await authService.login(username, password);
+      const tokenData = await authService.login(username, password, otpCode || undefined);
       localStorage.setItem('token', tokenData.access_token);
       
       // 2. Get User Details
@@ -26,7 +35,12 @@ const Login: React.FC<{ onLogin: (user: any) => void }> = ({ onLogin }) => {
       onLogin(user);
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data?.detail || '登录失败，请检查用户名和密码');
+      if (err?.response?.data?.detail === '2FA_REQUIRED') {
+        setRequire2FA(true);
+        setError('请输入 2FA 验证码');
+      } else {
+        setError(err.response?.data?.detail || '登录失败，请检查用户名和密码');
+      }
     } finally {
       setLoading(false);
     }
@@ -103,6 +117,19 @@ const Login: React.FC<{ onLogin: (user: any) => void }> = ({ onLogin }) => {
                 required
               />
             </label>
+            {require2FA && (
+              <label className="flex flex-col gap-2">
+                <span className="text-[#0d141b] dark:text-slate-200 text-sm font-semibold">2FA 验证码</span>
+                <input
+                  className="w-full rounded-lg text-[#0d141b] dark:text-slate-100 focus:ring-2 focus:ring-primary/20 border border-[#cfdbe7] dark:border-slate-700 bg-white dark:bg-slate-900 focus:border-primary h-12 placeholder:text-[#4c739a] dark:placeholder:text-slate-500 px-4 text-sm font-normal"
+                  placeholder="6位验证码"
+                  type="text"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value)}
+                  required
+                />
+              </label>
+            )}
             <div className="flex items-center gap-2 pt-1">
               <input className="size-4 rounded border-[#cfdbe7] text-primary focus:ring-primary" id="remember" type="checkbox" />
               <label className="text-sm text-[#4c739a] dark:text-slate-400 cursor-pointer" htmlFor="remember">在该设备上记住我</label>
@@ -119,7 +146,7 @@ const Login: React.FC<{ onLogin: (user: any) => void }> = ({ onLogin }) => {
         <div className="bg-[#f8fafc] dark:bg-slate-800/50 border-t border-[#e7edf3] dark:border-slate-800 p-6 text-center">
           <p className="text-[#4c739a] dark:text-slate-400 text-sm">
             还没有账号？ 
-            <button className="text-primary font-bold hover:underline ml-1">申请试用</button>
+            <button onClick={handleRequestTrial} className="text-primary font-bold hover:underline ml-1">申请试用</button>
           </p>
         </div>
       </main>

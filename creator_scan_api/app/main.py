@@ -18,7 +18,8 @@ from app.domains.creator import models as creator_models
 from app.domains.email import models as email_models
 from app.domains.email import template_models
 
-Base.metadata.create_all(bind=engine)
+if settings.AUTO_CREATE_TABLES:
+    Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -26,17 +27,11 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# CORS Configuration
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",  # Default Vite port
-    "chrome-extension://*",   # Allow all extensions (or specific ID if known)
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For dev, allow all. In prod, restrict.
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=settings.CORS_ALLOW_ORIGIN_REGEX,
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

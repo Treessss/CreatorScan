@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Leadflow Influencer CRM
 
-# Run and deploy your AI Studio app
+React + Vite frontend for CreatorScan.
 
-This contains everything you need to run your app locally.
+## Prerequisites
 
-View your app in AI Studio: https://ai.studio/apps/temp/1
+- Node.js 18+
+- Backend API running (default `http://localhost:8090`)
 
-## Run Locally
+## Local Run
 
-**Prerequisites:**  Node.js
+```bash
+npm install
+cp .env.example .env
+npm run dev
+```
 
+Default frontend URL: `http://localhost:5173`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Environment Variables
+
+- `VITE_PORT`: frontend dev port (default `5173`)
+- `VITE_API_BASE_URL`: backend API base URL (default `http://localhost:8090`)
+
+## Build
+
+```bash
+npm run build
+npm run preview
+```
+
+## Core Pages
+
+- `/dashboard`: dashboard metrics and trends
+- `/influencers`: creator list and filters
+- `/details/:id`: creator detail and contact status controls
+- `/marketing`: email compose/history/templates
+- `/settings`: profile, SMTP and security settings

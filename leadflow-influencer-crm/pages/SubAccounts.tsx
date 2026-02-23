@@ -2,13 +2,16 @@
 import React, { useState, useEffect } from 'react';
 import { userService } from '../services/api';
 import { UserResponse, AuditLogResponse } from '../types';
+import { useFeedback } from '../components/FeedbackProvider';
 
 type SubAccountTab = 'manage' | 'audit';
 
 const SubAccounts: React.FC = () => {
+  const { notify, confirm } = useFeedback();
   const [activeTab, setActiveTab] = useState<SubAccountTab>('manage');
   const [subAccounts, setSubAccounts] = useState<UserResponse[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogResponse[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   // Create Sub Account State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -39,10 +42,13 @@ const SubAccounts: React.FC = () => {
 
   const loadAuditLogs = async () => {
     try {
+      setAuditLoading(true);
       const data = await userService.getAuditLogs();
       setAuditLogs(data);
     } catch (err) {
       console.error('Failed to load audit logs', err);
+    } finally {
+      setAuditLoading(false);
     }
   };
 
@@ -53,20 +59,28 @@ const SubAccounts: React.FC = () => {
       setNewUsername('');
       setNewPassword('');
       loadSubAccounts();
-      alert('子账号创建成功');
+      notify('子账号创建成功', 'success');
     } catch (err: any) {
-      alert('创建失败: ' + (err.response?.data?.detail || err.message));
+      notify('创建失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
   const handleDeleteSubAccount = async (id: number) => {
-    if (confirm('确定要删除此子账号吗？此操作不可恢复。')) {
-      try {
-        await userService.deleteSubAccount(id);
-        loadSubAccounts();
-      } catch (err: any) {
-        alert('删除失败: ' + (err.response?.data?.detail || err.message));
-      }
+    const ok = await confirm({
+      title: '删除子账号',
+      message: '确定要删除此子账号吗？此操作不可恢复。',
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'danger',
+    });
+    if (!ok) return;
+
+    try {
+      await userService.deleteSubAccount(id);
+      loadSubAccounts();
+      notify('删除成功', 'success');
+    } catch (err: any) {
+      notify('删除失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -77,9 +91,9 @@ const SubAccounts: React.FC = () => {
       setShowPasswordModal(false);
       setUpdatePassword('');
       setSelectedUserId(null);
-      alert('密码更新成功');
+      notify('密码更新成功', 'success');
     } catch (err: any) {
-      alert('更新失败: ' + (err.response?.data?.detail || err.message));
+      notify('更新失败: ' + (err.response?.data?.detail || err.message), 'error');
     }
   };
 
@@ -90,10 +104,12 @@ const SubAccounts: React.FC = () => {
           <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
              <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
                <h3 className="font-bold text-slate-900 dark:text-white">系统审计日志</h3>
-               <button className="text-xs font-bold text-primary">刷新日志</button>
+               <button onClick={loadAuditLogs} className="text-xs font-bold text-primary">{auditLoading ? '刷新中...' : '刷新日志'}</button>
              </div>
              <div className="divide-y divide-slate-100 dark:divide-slate-800">
-               {auditLogs.length === 0 ? (
+               {auditLoading ? (
+                 <div className="p-8 text-center text-slate-500">加载中...</div>
+               ) : auditLogs.length === 0 ? (
                  <div className="p-8 text-center text-slate-500">暂无审计日志</div>
                ) : (
                  auditLogs.map((log, i) => (
@@ -183,7 +199,7 @@ const SubAccounts: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative">
+    <div className="flex-1 h-full overflow-y-auto max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
         <div className="space-y-1">
           <h2 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">子账号管理</h2>

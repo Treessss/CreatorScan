@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 import datetime
 
 
@@ -29,8 +29,7 @@ class SmtpConfigResponse(SmtpConfigBase):
     id: int
     user_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EmailSendRequest(BaseModel):
@@ -38,6 +37,7 @@ class EmailSendRequest(BaseModel):
     subject: str
     body: str
     smtp_config_id: Optional[int] = None
+    smtp_config_ids: Optional[List[int]] = None
 
 
 class EmailLogResponse(BaseModel):
@@ -52,11 +52,10 @@ class EmailLogResponse(BaseModel):
     sent_at: datetime.datetime
     replied_at: Optional[datetime.datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
-class EmailLogListResponse(BaseModel):
+class EmailLogListItemResponse(BaseModel):
     id: int
     sender_id: int
     recipient_id: int
@@ -70,8 +69,12 @@ class EmailLogListResponse(BaseModel):
     sent_at: datetime.datetime
     replied_at: Optional[datetime.datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmailLogPaginatedResponse(BaseModel):
+    items: List[EmailLogListItemResponse]
+    total: int
 
 
 # Email Template Schemas
@@ -97,5 +100,4 @@ class EmailTemplateResponse(EmailTemplateBase):
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

@@ -95,3 +95,28 @@ Extension collects creator data → User configures API Key in extension setting
 Backend configured to allow:
 - `http://localhost:3000` (Frontend)
 - `chrome-extension://*` (Extension)
+
+## 开发未完成项与任务分配
+
+### 前端（leadflow-influencer-crm）
+- 红人列表地区字段硬编码为“未知”，需要接入后端实际 location 数据
+- 红人列表“批量发送邮件”按钮未绑定行为
+- 红人详情“更改状态”按钮未实现
+
+### 后端（creator_scan_api）
+- Creator 数据未包含可直接输出的 location 字段
+- 缺少用于更新红人状态/跟进状态的接口
+
+### 插件（chrome_extension）
+- 任务创建平台仅支持 TikTok，Instagram/YouTube 在 UI 中处于 Coming Soon
+- 批量任务搜索入口仅支持 TikTok（background.js 仅返回 TikTok 搜索 URL）
+
+### 任务分配（建议）
+| 模块 | 任务 | 负责人 | 依赖 |
+| --- | --- | --- | --- |
+| 前端 | 红人列表地区字段接入与展示 | 前端 | 后端提供 location 字段 |
+| 后端 | Creator 数据补充 location 字段输出 | 后端 | 数据来源/采集或导入字段 |
+| 前端 | 红人列表批量发送邮件功能接入（选中项 + /emails/send） | 前端 | 后端批量发送接口已存在 |
+| 前端 | 红人详情“更改状态”功能实现 | 前端 | 后端提供状态更新接口 |
+| 后端 | 红人状态更新接口（例如跟进状态/标签） | 后端 | 数据模型与权限校验 |
+| 插件 | Instagram/YouTube 任务创建入口与搜索 URL 支持 | 插件 | background.js 任务搜索支持 |

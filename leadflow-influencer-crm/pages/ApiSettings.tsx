@@ -1,8 +1,10 @@
 
 import React, { useEffect, useState } from 'react';
 import { authService } from '../services/api';
+import { useFeedback } from '../components/FeedbackProvider';
 
 const ApiSettings: React.FC = () => {
+  const { notify } = useFeedback();
   const [apiKey, setApiKey] = useState('Loading...');
   const [user, setUser] = useState<any>(null);
 
@@ -58,7 +60,7 @@ const ApiSettings: React.FC = () => {
                         <button 
                             className="p-2 text-[#4c739a] hover:text-primary transition-colors" 
                             title="复制密钥"
-                            onClick={() => {navigator.clipboard.writeText(apiKey); alert('Copied!');}}
+                            onClick={() => {navigator.clipboard.writeText(apiKey); notify('已复制 API Key', 'success');}}
                         >
                             <span className="material-symbols-outlined">content_copy</span>
                         </button>

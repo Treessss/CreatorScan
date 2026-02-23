@@ -2,12 +2,47 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { creatorService } from '../services/api';
+import { useFeedback } from '../components/FeedbackProvider';
+
+type ContactStatus = 'none' | 'pending' | 'sent' | 'replied';
 
 const InfluencerDetail: React.FC = () => {
+  const { notify } = useFeedback();
   const { id } = useParams<{ id: string }>();
   const [creator, setCreator] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [shareMessage, setShareMessage] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  const getContactStatus = (item: any): ContactStatus => {
+    if (item?.has_replied) return 'replied';
+    if (item?.email_status === 'sent') return 'sent';
+    if (item?.manual_status === 'pending') return 'pending';
+    return 'none';
+  };
+
+  const getStatusMeta = (status: ContactStatus) => {
+    if (status === 'replied') return { label: '已回复', desc: '该红人已回复您的邮件', className: 'bg-emerald-100 text-emerald-600' };
+    if (status === 'sent') return { label: '已联系', desc: '已发送邮件，等待对方回复', className: 'bg-blue-100 text-blue-600' };
+    if (status === 'pending') return { label: '跟进中', desc: '已加入手动跟进队列', className: 'bg-amber-100 text-amber-700' };
+    return { label: '待联系', desc: '尚未建立有效沟通', className: 'bg-slate-100 text-slate-600' };
+  };
+
+  const handleUpdateStatus = async (status: 'none' | 'pending') => {
+    if (!id) return;
+    try {
+      setUpdatingStatus(true);
+      const updated = await creatorService.updateStatus(id, status);
+      setCreator(updated);
+    } catch (err: any) {
+      console.error('Failed to update status:', err);
+      notify(err?.response?.data?.detail || '更新状态失败', 'error');
+    } finally {
+      setUpdatingStatus(false);
+    }
+  };
 
   useEffect(() => {
     const fetchCreator = async () => {
@@ -51,6 +86,30 @@ const InfluencerDetail: React.FC = () => {
   const bio = data.signature || data.bio || '暂无简介';
   const location = data.location || '未知';
   const platform = creator.platform;
+  const statusMeta = getStatusMeta(getContactStatus(creator));
+  const profileLink = data.shareLink || data.ShareLink || data.profileUrl || data.profile_url || '';
+
+  const handleShare = async () => {
+    const detailUrl = window.location.href;
+    try {
+      await navigator.clipboard.writeText(detailUrl);
+      setShareMessage('详情链接已复制');
+    } catch {
+      setShareMessage('复制失败，请手动复制地址栏链接');
+    } finally {
+      window.setTimeout(() => setShareMessage(null), 2500);
+    }
+  };
+
+  const handleOpenProfile = () => {
+    if (!profileLink) {
+      setShareMessage('未找到可打开的主页链接');
+      window.setTimeout(() => setShareMessage(null), 2500);
+      return;
+    }
+    window.open(profileLink, '_blank', 'noopener,noreferrer');
+    setMoreOpen(false);
+  };
 
   return (
     <div className="flex-1 overflow-y-auto h-full w-full">
@@ -125,9 +184,21 @@ const InfluencerDetail: React.FC = () => {
               <span className="material-symbols-outlined text-sm">mail</span>
               立即联系
             </Link>
-            <button className="w-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-900 dark:text-white font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-all">
+            <button
+              onClick={() => handleUpdateStatus('pending')}
+              disabled={updatingStatus}
+              className="w-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 disabled:opacity-60 disabled:cursor-not-allowed dark:hover:bg-slate-700 text-slate-900 dark:text-white font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-all"
+            >
               <span className="material-symbols-outlined text-sm">sync_alt</span>
-              更改状态
+              标记跟进中
+            </button>
+            <button
+              onClick={() => handleUpdateStatus('none')}
+              disabled={updatingStatus}
+              className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200 font-bold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-all"
+            >
+              <span className="material-symbols-outlined text-sm">remove_done</span>
+              清除手动状态
             </button>
           </div>
         </aside>
@@ -135,23 +206,50 @@ const InfluencerDetail: React.FC = () => {
         <div className="flex-1 flex flex-col gap-8 w-full">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${
-                creator.email_status === 'replied' ? 'bg-emerald-100 text-emerald-600' :
-                creator.email_status === 'sent' ? 'bg-blue-100 text-blue-600' :
-                'bg-slate-100 text-slate-600'
-              }`}>
-                {creator.email_status === 'replied' ? '已回复' : 
-                 creator.email_status === 'sent' ? '已联系' : '待联系'}
-              </div>
+              <div className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${statusMeta.className}`}>{statusMeta.label}</div>
               <div className="text-xs text-slate-500">
-                {creator.email_status === 'replied' ? '该红人已回复您的邮件' : '尚未建立有效沟通'}
+                {statusMeta.desc}
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"><span className="material-symbols-outlined">share</span></button>
-              <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"><span className="material-symbols-outlined">more_horiz</span></button>
+              <button
+                onClick={handleShare}
+                className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"
+                title="复制详情链接"
+              >
+                <span className="material-symbols-outlined">share</span>
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setMoreOpen((v) => !v)}
+                  className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"
+                  title="更多操作"
+                >
+                  <span className="material-symbols-outlined">more_horiz</span>
+                </button>
+                {moreOpen && (
+                  <div className="absolute right-0 mt-2 w-48 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg z-10">
+                    <button
+                      onClick={handleOpenProfile}
+                      className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    >
+                      打开红人主页
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMoreOpen(false);
+                        handleShare();
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    >
+                      复制详情链接
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+          {shareMessage && <div className="text-xs text-slate-500 -mt-6">{shareMessage}</div>}
 
           <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
             <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">

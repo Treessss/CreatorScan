@@ -4,8 +4,9 @@ from sqlalchemy import or_, func, cast, String
 from app.domains.creator.models import Creator
 from app.domains.creator import schemas
 
-def get_creator_by_platform_uid(db: Session, platform: str, unique_id: str):
+def get_creator_by_platform_uid(db: Session, owner_id: int, platform: str, unique_id: str):
     return db.query(Creator).filter(
+        Creator.owner_id == owner_id,
         Creator.platform == platform,
         Creator.unique_id == unique_id
     ).first()
@@ -23,6 +24,15 @@ def create_creator(db: Session, creator: schemas.CreatorCreate, owner_id: int):
     return db_creator
 
 def update_creator_data(db: Session, db_creator: Creator, data: dict):
+    db_creator.data = dict(data or {})
+    db.commit()
+    db.refresh(db_creator)
+    return db_creator
+
+def update_creator_manual_status(db: Session, db_creator: Creator, status: str):
+    # Copy JSON payload so SQLAlchemy detects the field change reliably.
+    data = dict(db_creator.data or {})
+    data["manual_status"] = status
     db_creator.data = data
     db.commit()
     db.refresh(db_creator)

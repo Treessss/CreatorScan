@@ -5,8 +5,7 @@ from app.core.database import get_db
 from app.domains.email import schemas, service, template_service
 from app.domains.auth.service import get_current_user
 from app.domains.user.models import User
-from app.core.exceptions import AuthError
-from app.domains.creator.models import Creator
+from app.core.exceptions import AuthError, PermissionError
 
 router = APIRouter(prefix="/emails", tags=["emails"])
 
@@ -79,9 +78,24 @@ def send_batch_emails(
     if not request.creator_ids:
         raise HTTPException(status_code=400, detail="No creator IDs provided")
 
+    if request.smtp_config_ids:
+        owned_config_ids = {c.id for c in configs}
+        invalid_ids = [cid for cid in request.smtp_config_ids if cid not in owned_config_ids]
+        if invalid_ids:
+            raise PermissionError(f"SMTP configs not owned by current user: {invalid_ids}")
+
+    unowned_ids = service.EmailService.find_unowned_creator_ids(db, current_user.id, request.creator_ids)
+    if unowned_ids:
+        raise PermissionError(f"Creators not owned by current user: {unowned_ids}")
+
     background_tasks.add_task(
-        service.EmailService.send_batch_emails,
-        db, current_user.id, request.creator_ids, request.subject, request.body, request.smtp_config_id
+        service.EmailService.send_batch_emails_task,
+        current_user.id,
+        request.creator_ids,
+        request.subject,
+        request.body,
+        request.smtp_config_id,
+        request.smtp_config_ids,
     )
     return {"message": "Emails queued for sending", "count": len(request.creator_ids)}
 
@@ -96,11 +110,11 @@ def sync_email_replies(
     if not configs:
         raise AuthError("No SMTP configuration found. Please add one in Settings.")
 
-    background_tasks.add_task(service.EmailService.sync_replies, db, current_user.id)
+    background_tasks.add_task(service.EmailService.sync_replies_task, current_user.id)
     return {"message": "Sync started"}
 
 
-@router.get("/logs", response_model=schemas.EmailLogListResponse)
+@router.get("/logs", response_model=schemas.EmailLogPaginatedResponse)
 def get_email_logs(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
@@ -129,8 +143,7 @@ def get_email_logs(
             "replied_at": log.replied_at
         }
         items.append(item_data)
-    # Return just the items list for backward compatibility
-    return items
+    return {"items": items, "total": result["total"]}
 
 
 @router.get("/logs/stats")

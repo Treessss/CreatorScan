@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { EmailSendRequest, SmtpConfig, EmailTemplate } from '../types';
 
-const API_URL = 'http://localhost:8090';
+const API_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8090').replace(/\/$/, '');
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -39,10 +39,11 @@ api.interceptors.response.use(
 );
 
 export const authService = {
-  login: async (username, password) => {
+  login: async (username, password, otpCode?: string) => {
     const formData = new FormData();
     formData.append('username', username);
     formData.append('password', password);
+    if (otpCode) formData.append('otp_code', otpCode);
     const response = await api.post('/token', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
@@ -83,8 +84,26 @@ export const userService = {
     const response = await api.put('/users/me', { username });
     return response.data;
   },
-  updatePassword: async (password: string) => {
-    const response = await api.put('/users/me/password', { password });
+  updatePassword: async (currentPassword: string, newPassword: string) => {
+    const response = await api.put('/users/me/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    return response.data;
+  },
+  setup2FA: async () => {
+    const response = await api.post('/users/me/2fa/setup');
+    return response.data;
+  },
+  enable2FA: async (code: string) => {
+    const response = await api.post('/users/me/2fa/enable', { code });
+    return response.data;
+  },
+  disable2FA: async (currentPassword: string, code: string) => {
+    const response = await api.post('/users/me/2fa/disable', {
+      current_password: currentPassword,
+      code,
+    });
     return response.data;
   }
 };
@@ -117,6 +136,10 @@ export const creatorService = {
   },
   delete: async (id: string) => {
     const response = await api.delete(`/creators/${id}`);
+    return response.data;
+  },
+  updateStatus: async (id: string, status: 'none' | 'pending') => {
+    const response = await api.patch(`/creators/${id}/status`, { status });
     return response.data;
   },
   batchDelete: async (ids: string[]) => {

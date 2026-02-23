@@ -2,11 +2,28 @@
 import React, { useState, useEffect } from 'react';
 import { smtpService, userService, authService } from '../services/api';
 import { SmtpConfig } from '../types';
+import { useFeedback } from '../components/FeedbackProvider';
 
 type SettingsTab = 'profile' | 'smtp' | 'security';
 
 const Settings: React.FC = () => {
+  const { notify, confirm } = useFeedback();
   const [activeTab, setActiveTab] = useState<SettingsTab>('smtp');
+  const [profileUsername, setProfileUsername] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [passwordCurrent, setPasswordCurrent] = useState('');
+  const [passwordNew, setPasswordNew] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [twoFAEnabled, setTwoFAEnabled] = useState(false);
+  const [twoFASecret, setTwoFASecret] = useState('');
+  const [twoFAOtp, setTwoFAOtp] = useState('');
+  const [twoFADisablePassword, setTwoFADisablePassword] = useState('');
+  const [twoFADisableOtp, setTwoFADisableOtp] = useState('');
+  const [twoFAWorking, setTwoFAWorking] = useState(false);
+  const [twoFAMessage, setTwoFAMessage] = useState<string | null>(null);
   
   // SMTP State
   const [smtpConfigs, setSmtpConfigs] = useState<SmtpConfig[]>([]);
@@ -16,10 +33,24 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    loadMyProfile();
+  }, []);
+
+  useEffect(() => {
     if (activeTab === 'smtp') {
       loadSmtpConfigs();
     }
   }, [activeTab]);
+
+  const loadMyProfile = async () => {
+    try {
+      const me = await authService.getMe();
+      setProfileUsername(me.username || '');
+      setTwoFAEnabled(!!me.two_fa_enabled);
+    } catch (err) {
+      console.error('Failed to load profile', err);
+    }
+  };
 
   const loadSmtpConfigs = async () => {
     try {
@@ -53,24 +84,32 @@ const Settings: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
-    if (!window.confirm('确定要删除此 SMTP 配置吗？')) return;
+    const ok = await confirm({
+      title: '删除 SMTP 配置',
+      message: '确定要删除此 SMTP 配置吗？',
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'danger',
+    });
+    if (!ok) return;
     try {
       await smtpService.delete(id);
       loadSmtpConfigs();
+      notify('删除成功', 'success');
     } catch (err) {
-      alert('删除失败');
+      notify('删除失败', 'error');
     }
   };
 
   const handleSave = async () => {
     if (!editingConfig?.username || !editingConfig?.host) {
-      alert('请填写必要信息');
+      notify('请填写必要信息', 'warning');
       return;
     }
     
     // Check password only for new configs
     if (!editingConfig.id && !editingConfig.password) {
-        alert('请输入密码/应用专用密码');
+        notify('请输入密码/应用专用密码', 'warning');
         return;
     }
 
@@ -82,9 +121,10 @@ const Settings: React.FC = () => {
       }
       setIsListView(true);
       loadSmtpConfigs();
+      notify('保存成功', 'success');
     } catch (err) {
       console.error(err);
-      alert('保存失败');
+      notify('保存失败', 'error');
     }
   };
 
@@ -99,6 +139,106 @@ const Settings: React.FC = () => {
       });
     } catch (err: any) {
       setTestStatus({ success: false, message: `错误: ${err.message}` });
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    if (!profileUsername.trim()) {
+      setProfileMessage('用户名不能为空');
+      return;
+    }
+    try {
+      setProfileSaving(true);
+      setProfileMessage(null);
+      const updated = await userService.updateProfile(profileUsername.trim());
+      localStorage.setItem('user', JSON.stringify(updated));
+      setProfileMessage('个人资料已保存');
+    } catch (err: any) {
+      setProfileMessage(err?.response?.data?.detail || '保存失败');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleUpdatePassword = async () => {
+    if (!passwordCurrent) {
+      setPasswordMessage('请输入当前密码');
+      return;
+    }
+    if (!passwordNew || passwordNew.length < 6) {
+      setPasswordMessage('新密码至少 6 位');
+      return;
+    }
+    if (passwordNew !== passwordConfirm) {
+      setPasswordMessage('两次输入的新密码不一致');
+      return;
+    }
+    try {
+      setPasswordSaving(true);
+      setPasswordMessage(null);
+      await userService.updatePassword(passwordCurrent, passwordNew);
+      setPasswordCurrent('');
+      setPasswordNew('');
+      setPasswordConfirm('');
+      setPasswordMessage('密码已更新');
+    } catch (err: any) {
+      setPasswordMessage(err?.response?.data?.detail || '更新密码失败');
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
+  const handleGenerate2FA = async () => {
+    try {
+      setTwoFAWorking(true);
+      setTwoFAMessage(null);
+      const data = await userService.setup2FA();
+      setTwoFASecret(data.secret);
+      setTwoFAMessage('已生成密钥，请在认证器中添加后输入验证码启用');
+    } catch (err: any) {
+      setTwoFAMessage(err?.response?.data?.detail || '生成 2FA 密钥失败');
+    } finally {
+      setTwoFAWorking(false);
+    }
+  };
+
+  const handleEnable2FA = async () => {
+    if (!twoFAOtp.trim()) {
+      setTwoFAMessage('请输入验证码');
+      return;
+    }
+    try {
+      setTwoFAWorking(true);
+      setTwoFAMessage(null);
+      const user = await userService.enable2FA(twoFAOtp.trim());
+      setTwoFAEnabled(!!user.two_fa_enabled);
+      setTwoFASecret('');
+      setTwoFAOtp('');
+      setTwoFAMessage('2FA 已启用');
+    } catch (err: any) {
+      setTwoFAMessage(err?.response?.data?.detail || '启用 2FA 失败');
+    } finally {
+      setTwoFAWorking(false);
+    }
+  };
+
+  const handleDisable2FA = async () => {
+    if (!twoFADisablePassword || !twoFADisableOtp) {
+      setTwoFAMessage('请输入当前密码和验证码');
+      return;
+    }
+    try {
+      setTwoFAWorking(true);
+      setTwoFAMessage(null);
+      const user = await userService.disable2FA(twoFADisablePassword, twoFADisableOtp);
+      setTwoFAEnabled(!!user.two_fa_enabled);
+      setTwoFADisablePassword('');
+      setTwoFADisableOtp('');
+      setTwoFAMessage('2FA 已关闭');
+    } catch (err: any) {
+      setTwoFAMessage(err?.response?.data?.detail || '关闭 2FA 失败');
+    } finally {
+      setTwoFAWorking(false);
     }
   };
 
@@ -286,44 +426,39 @@ const Settings: React.FC = () => {
       case 'profile':
         return (
           <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            {/* ... Existing Profile Code ... */}
              <div className="border-b border-slate-100 dark:border-slate-800 px-8 py-6">
               <h2 className="text-[#0d141b] dark:text-white text-[22px] font-bold">个人信息</h2>
               <p className="text-[#4c739a] dark:text-slate-400 text-sm mt-1">管理您在 LeadFlow 平台上的公开信息和偏好设置。</p>
             </div>
             <div className="px-8 py-8 flex flex-col gap-8">
-              <div className="flex flex-col md:flex-row gap-8 items-start">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="size-24 rounded-full bg-slate-200 bg-cover bg-center border-4 border-slate-50 dark:border-slate-800 shadow-sm" style={{ backgroundImage: "url('https://picsum.photos/200/200?random=1')" }}></div>
-                  <button className="text-xs font-bold text-primary hover:underline">更换头像</button>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">用户名</label>
+                  <input
+                    className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    value={profileUsername}
+                    onChange={(e) => setProfileUsername(e.target.value)}
+                    placeholder="请输入用户名"
+                  />
                 </div>
-                <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">姓名</label>
-                    <input className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" defaultValue="Alex Rivera" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">职位名称</label>
-                    <input className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" defaultValue="增长经理" />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">显示语言</label>
-                    <select className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-                      <option>简体中文</option>
-                      <option>English</option>
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">时区</label>
-                    <select className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-                      <option>(GMT+08:00) 北京, 上海</option>
-                      <option>(GMT-08:00) 太平洋时间</option>
-                    </select>
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">说明</label>
+                  <div className="w-full h-10 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 flex items-center text-sm text-slate-500">
+                    当前版本仅开放用户名编辑
                   </div>
                 </div>
               </div>
               <div className="flex justify-end pt-4 border-t border-slate-100 dark:border-slate-800">
-                <button className="bg-primary px-8 py-2 rounded-lg text-sm font-bold text-white hover:bg-primary/90">保存个人资料</button>
+                <div className="flex items-center gap-4">
+                  {profileMessage && <span className="text-sm text-slate-500">{profileMessage}</span>}
+                  <button
+                    onClick={handleSaveProfile}
+                    disabled={profileSaving}
+                    className="bg-primary px-8 py-2 rounded-lg text-sm font-bold text-white hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    {profileSaving ? '保存中...' : '保存个人资料'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -336,59 +471,129 @@ const Settings: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">当前密码</label>
-                  <input className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" type="password" />
+                  <input
+                    className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    type="password"
+                    value={passwordCurrent}
+                    onChange={(e) => setPasswordCurrent(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">新密码</label>
-                  <input className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" type="password" />
+                  <input
+                    className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    type="password"
+                    value={passwordNew}
+                    onChange={(e) => setPasswordNew(e.target.value)}
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">确认新密码</label>
-                  <input className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" type="password" />
+                  <input
+                    className="w-full h-10 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                    type="password"
+                    value={passwordConfirm}
+                    onChange={(e) => setPasswordConfirm(e.target.value)}
+                  />
                 </div>
               </div>
               <div className="mt-6 flex justify-end">
-                <button className="bg-primary px-8 py-2 rounded-lg text-sm font-bold text-white">更新密码</button>
+                <div className="flex items-center gap-4">
+                  {passwordMessage && <span className="text-sm text-slate-500">{passwordMessage}</span>}
+                  <button
+                    onClick={handleUpdatePassword}
+                    disabled={passwordSaving}
+                    className="bg-primary px-8 py-2 rounded-lg text-sm font-bold text-white disabled:opacity-60"
+                  >
+                    {passwordSaving ? '更新中...' : '更新密码'}
+                  </button>
+                </div>
               </div>
             </div>
             
             <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h2 className="text-[#0d141b] dark:text-white text-xl font-bold">双重身份验证 (2FA)</h2>
-                  <p className="text-[#4c739a] text-sm mt-1">通过在登录时要求使用安全代码来增加账户安全性。</p>
-                </div>
-                <div className="relative inline-block w-12 h-6 bg-slate-200 dark:bg-slate-800 rounded-full cursor-pointer">
-                  <div className="absolute left-1 top-1 size-4 bg-white rounded-full transition-transform"></div>
-                </div>
+              <div className="mb-6">
+                <h2 className="text-[#0d141b] dark:text-white text-xl font-bold">双重身份验证 (2FA)</h2>
+                <p className="text-[#4c739a] text-sm mt-1">
+                  当前状态：{twoFAEnabled ? '已启用' : '未启用'}
+                </p>
               </div>
-              <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800 rounded-lg p-4 flex gap-3 text-blue-700 dark:text-blue-300">
-                <span className="material-symbols-outlined">verified_user</span>
-                <p className="text-sm">尚未启用 2FA。启用后，您将需要输入发送到您手机或邮箱的 6 位代码。</p>
-              </div>
+              {!twoFAEnabled ? (
+                <div className="space-y-4">
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleGenerate2FA}
+                      disabled={twoFAWorking}
+                      className="bg-primary px-4 py-2 rounded-lg text-sm font-bold text-white disabled:opacity-60"
+                    >
+                      生成密钥
+                    </button>
+                    {twoFASecret && (
+                      <button
+                        onClick={() => navigator.clipboard.writeText(twoFASecret)}
+                        className="border border-slate-300 dark:border-slate-700 px-4 py-2 rounded-lg text-sm font-medium"
+                      >
+                        复制密钥
+                      </button>
+                    )}
+                  </div>
+                  {twoFASecret && (
+                    <div className="text-sm text-slate-600 dark:text-slate-300 break-all">Secret: {twoFASecret}</div>
+                  )}
+                  <div className="flex gap-3 items-center">
+                    <input
+                      className="w-48 h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      placeholder="输入6位验证码"
+                      value={twoFAOtp}
+                      onChange={(e) => setTwoFAOtp(e.target.value)}
+                    />
+                    <button
+                      onClick={handleEnable2FA}
+                      disabled={twoFAWorking || !twoFASecret}
+                      className="bg-primary px-4 py-2 rounded-lg text-sm font-bold text-white disabled:opacity-60"
+                    >
+                      启用 2FA
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <input
+                      className="h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      type="password"
+                      placeholder="当前密码"
+                      value={twoFADisablePassword}
+                      onChange={(e) => setTwoFADisablePassword(e.target.value)}
+                    />
+                    <input
+                      className="h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      placeholder="当前验证码"
+                      value={twoFADisableOtp}
+                      onChange={(e) => setTwoFADisableOtp(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    onClick={handleDisable2FA}
+                    disabled={twoFAWorking}
+                    className="border border-red-300 text-red-600 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-60"
+                  >
+                    关闭 2FA
+                  </button>
+                </div>
+              )}
+              {twoFAMessage && <p className="text-sm text-slate-500 mt-4">{twoFAMessage}</p>}
             </div>
 
-            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-               <div className="px-8 py-4 border-b border-slate-100 dark:border-slate-800">
-                 <h2 className="text-[#0d141b] dark:text-white text-lg font-bold">活跃会话</h2>
-               </div>
-               <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                 {[
-                   { device: 'macOS - Chrome 浏览器', location: '中国, 北京', time: '当前在线', icon: 'desktop_windows' },
-                   { device: 'iPhone 15 Pro - App', location: '中国, 上海', time: '2小时前', icon: 'smartphone' }
-                 ].map((session, i) => (
-                   <div key={i} className="px-8 py-4 flex items-center justify-between">
-                     <div className="flex items-center gap-4">
-                       <span className="material-symbols-outlined text-slate-400">{session.icon}</span>
-                       <div>
-                         <p className="text-sm font-semibold text-slate-900 dark:text-white">{session.device}</p>
-                         <p className="text-xs text-slate-500">{session.location} • {session.time}</p>
-                       </div>
-                     </div>
-                     <button className="text-xs font-bold text-red-500 hover:underline">注销</button>
-                   </div>
-                 ))}
-               </div>
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm p-8">
+              <div className="mb-6">
+                <h2 className="text-[#0d141b] dark:text-white text-xl font-bold">会话管理</h2>
+                <p className="text-[#4c739a] text-sm mt-1">当前版本不展示活跃会话，也不提供远程注销入口。</p>
+              </div>
+              <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800 rounded-lg p-4 flex gap-3 text-amber-700 dark:text-amber-300">
+                <span className="material-symbols-outlined">info</span>
+                <p className="text-sm">如需强制下线，请先修改密码并轮换 API Key。后续版本会补齐完整会话管理能力。</p>
+              </div>
             </div>
           </div>
         );
@@ -399,7 +604,7 @@ const Settings: React.FC = () => {
   };
 
   return (
-    <div className="layout-content-container flex flex-col max-w-[960px] flex-1 px-4 mx-auto py-10">
+    <div className="layout-content-container h-full overflow-y-auto flex flex-col max-w-[960px] flex-1 px-4 mx-auto py-10">
       <div className="flex flex-wrap justify-between gap-3 pb-6">
         <div className="flex min-w-72 flex-col gap-2">
           <p className="text-[#0d141b] dark:text-white text-4xl font-black leading-tight tracking-[-0.033em]">系统设置</p>

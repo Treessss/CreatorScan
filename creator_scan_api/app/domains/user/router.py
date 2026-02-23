@@ -32,7 +32,12 @@ def update_my_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return service.UserService.update_password(db, current_user.id, user_update.password)
+    return service.UserService.update_password(
+        db,
+        current_user.id,
+        user_update.current_password,
+        user_update.new_password,
+    )
 
 @router.post("/sub", response_model=schemas.UserResponse)
 def create_sub_account(
@@ -45,7 +50,7 @@ def create_sub_account(
 @router.put("/sub/{sub_id}/password", response_model=schemas.UserResponse)
 def update_sub_account_password(
     sub_id: int,
-    user_update: schemas.UserUpdatePassword,
+    user_update: schemas.SubAccountPasswordUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -88,3 +93,29 @@ def get_audit_logs(
     db: Session = Depends(get_db)
 ):
     return AuditService.get_logs(db, current_user.id, skip, limit)
+
+
+@router.post("/me/2fa/setup", response_model=schemas.TwoFASetupResponse)
+def setup_two_fa(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return service.UserService.generate_2fa_setup(db, current_user.id)
+
+
+@router.post("/me/2fa/enable", response_model=schemas.UserResponse)
+def enable_two_fa(
+    request: schemas.TwoFAEnableRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return service.UserService.enable_2fa(db, current_user.id, request.code)
+
+
+@router.post("/me/2fa/disable", response_model=schemas.UserResponse)
+def disable_two_fa(
+    request: schemas.TwoFADisableRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return service.UserService.disable_2fa(db, current_user.id, request.current_password, request.code)

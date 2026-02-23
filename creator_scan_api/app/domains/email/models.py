@@ -4,6 +4,10 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
 
+
+def _utcnow_naive():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
 class SmtpConfig(Base):
     __tablename__ = "smtp_configs"
 
@@ -35,7 +39,7 @@ class EmailLog(Base):
     status = Column(String) # 'sent', 'failed'
     replied = Column(Boolean, default=False)
     reply_content = Column(String, nullable=True)
-    sent_at = Column(DateTime, default=datetime.datetime.utcnow)
+    sent_at = Column(DateTime, default=_utcnow_naive)
     replied_at = Column(DateTime, nullable=True)
 
     sender = relationship("app.domains.user.models.User", back_populates="sent_emails")

@@ -7,10 +7,17 @@ from fastapi import UploadFile
 
 class CreatorService:
     @staticmethod
+    def _allowed_owner_ids(user):
+        allowed_ids = [user.id]
+        if user.is_master:
+            allowed_ids.extend([sub.id for sub in user.sub_accounts])
+        return allowed_ids
+
+    @staticmethod
     def push_creators(db: Session, creators: list[schemas.CreatorCreate], user_id: int):
         saved_creators = []
         for creator in creators:
-            existing = repository.get_creator_by_platform_uid(db, creator.platform, creator.unique_id)
+            existing = repository.get_creator_by_platform_uid(db, user_id, creator.platform, creator.unique_id)
             if existing:
                 # Update data for existing
                 updated = repository.update_creator_data(db, existing, creator.data)
@@ -178,9 +185,7 @@ class CreatorService:
             return None
             
         # Check permissions
-        allowed_ids = [user.id]
-        if user.is_master:
-            allowed_ids.extend([sub.id for sub in user.sub_accounts])
+        allowed_ids = CreatorService._allowed_owner_ids(user)
             
         if creator.owner_id not in allowed_ids:
             return None
@@ -195,9 +200,7 @@ class CreatorService:
             
         # Check permissions
         # User can delete if they own it, or if they are master and it belongs to a sub-account
-        allowed_ids = [user.id]
-        if user.is_master:
-            allowed_ids.extend([sub.id for sub in user.sub_accounts])
+        allowed_ids = CreatorService._allowed_owner_ids(user)
             
         if creator.owner_id not in allowed_ids:
             # In a real app, maybe raise specific exception
@@ -205,7 +208,15 @@ class CreatorService:
             
         repository.delete_creator(db, creator)
         return True
-        # Ideally: Router calls CreatorService -> gets creators -> Router calls EmailService -> enriches.
-        # But for list views, a repository JOIN is best. 
-        # Keeping it simple: We will do a lazy load in Router or here using a helper.
-        return creators
+
+    @staticmethod
+    def update_creator_status(db: Session, creator_id: int, status: str, user):
+        creator = repository.get_creator_by_id(db, creator_id)
+        if not creator:
+            return None
+
+        allowed_ids = CreatorService._allowed_owner_ids(user)
+        if creator.owner_id not in allowed_ids:
+            return None
+
+        return repository.update_creator_manual_status(db, creator, status)

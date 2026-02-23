@@ -105,7 +105,7 @@
             margin-bottom: 6px;
         }
 
-        .form-input, .form-select, .form-textarea {
+        .form-input, .form-textarea {
             width: 100%;
             padding: 10px;
             border: 1px solid var(--border);
@@ -116,7 +116,7 @@
             font-family: inherit;
         }
 
-        .form-input:focus, .form-select:focus, .form-textarea:focus {
+        .form-input:focus, .form-textarea:focus {
             outline: none;
             border-color: var(--primary);
         }
@@ -329,6 +329,12 @@
         .select-option input[type="checkbox"] {
             margin: 0;
         }
+
+        .select-option.selected {
+            background-color: #FFF2F7;
+            color: var(--primary);
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -362,11 +368,14 @@
     <div id="view-create" class="container hidden">
         <div class="form-group">
             <label class="form-label">选择平台</label>
-            <select id="platform" class="form-select">
-                <option value="tiktok">TikTok</option>
-                <option value="instagram" disabled>Instagram (Coming Soon)</option>
-                <option value="youtube" disabled>YouTube (Coming Soon)</option>
-            </select>
+            <div id="platform-selector" class="custom-select-container">
+                <div class="select-trigger" id="platform-trigger">TikTok</div>
+                <div class="select-options" id="platform-options">
+                    <div class="select-option selected" data-value="tiktok">TikTok</div>
+                    <div class="select-option" data-value="instagram">Instagram</div>
+                    <div class="select-option" data-value="youtube">YouTube</div>
+                </div>
+            </div>
         </div>
 
         <div class="form-group">

@@ -11,6 +11,7 @@ import SubAccounts from './pages/SubAccounts';
 import Settings from './pages/Settings';
 import ApiSettings from './pages/ApiSettings';
 import Login from './pages/Login';
+import { FeedbackProvider } from './components/FeedbackProvider';
 
 // Main Layout Component
 const MainLayout: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
@@ -56,26 +57,28 @@ function App() {
   }
 
   return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={
-          isAuthenticated ? <Navigate to="/" replace /> : <Login onLogin={handleLogin} />
-        } />
-        
-        <Route path="/" element={
-          isAuthenticated ? <MainLayout onLogout={handleLogout} /> : <Navigate to="/login" replace />
-        }>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="influencers" element={<InfluencerList />} />
-          <Route path="details/:id" element={<InfluencerDetail />} />
-          <Route path="marketing" element={<EmailMarketing />} />
-          <Route path="sub-accounts" element={<SubAccounts />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="api-keys" element={<ApiSettings />} />
-        </Route>
-      </Routes>
-    </Router>
+    <FeedbackProvider>
+      <Router>
+        <Routes>
+          <Route path="/login" element={
+            isAuthenticated ? <Navigate to="/" replace /> : <Login onLogin={handleLogin} />
+          } />
+          
+          <Route path="/" element={
+            isAuthenticated ? <MainLayout onLogout={handleLogout} /> : <Navigate to="/login" replace />
+          }>
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="influencers" element={<InfluencerList />} />
+            <Route path="details/:id" element={<InfluencerDetail />} />
+            <Route path="marketing" element={<EmailMarketing />} />
+            <Route path="sub-accounts" element={<SubAccounts />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="api-keys" element={<ApiSettings />} />
+          </Route>
+        </Routes>
+      </Router>
+    </FeedbackProvider>
   );
 }
 

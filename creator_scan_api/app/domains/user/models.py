@@ -5,6 +5,10 @@ from app.core.database import Base
 import uuid
 import datetime
 
+
+def _utcnow_naive():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
 def generate_api_key():
     return str(uuid.uuid4())
 
@@ -17,6 +21,9 @@ class User(Base):
     is_master = Column(Boolean, default=False)
     master_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     api_key = Column(String, unique=True, index=True, default=generate_api_key)
+    two_fa_enabled = Column(Boolean, default=False)
+    two_fa_secret = Column(String, nullable=True)
+    two_fa_temp_secret = Column(String, nullable=True)
 
     # Email config
     email_host = Column(String, default="smtp.gmail.com")
@@ -43,6 +50,6 @@ class AuditLog(Base):
     target_id = Column(Integer, nullable=True)
     details = Column(String, nullable=True) # JSON or text description
     ip_address = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     user = relationship("User", back_populates="audit_logs")

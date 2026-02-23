@@ -1,3 +1,57 @@
+function csEnsureUi() {
+    if (document.getElementById('cs-ui-style')) return;
+    const style = document.createElement('style');
+    style.id = 'cs-ui-style';
+    style.textContent = `
+    .cs-toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 14px;border-radius:10px;font-size:12px;z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.3);}
+    .cs-mask{position:fixed;inset:0;background:rgba(2,6,23,.45);display:flex;align-items:center;justify-content:center;z-index:99998;}
+    .cs-dialog{width:320px;background:#fff;border-radius:12px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.28);}
+    .cs-title{font-weight:700;font-size:14px;color:#111827;margin-bottom:6px;}
+    .cs-msg{font-size:12px;color:#4b5563;line-height:1.5;}
+    .cs-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+    .cs-btn{border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;}
+    .cs-btn.primary{background:#FF0050;border-color:#FF0050;color:#fff;}
+    `;
+    document.head.appendChild(style);
+}
+
+function csAlert(message) {
+    csEnsureUi();
+    const el = document.createElement('div');
+    el.className = 'cs-toast';
+    el.textContent = String(message);
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2200);
+}
+
+function csConfirm(message, title = '确认操作') {
+    csEnsureUi();
+    return new Promise((resolve) => {
+        const mask = document.createElement('div');
+        mask.className = 'cs-mask';
+        mask.innerHTML = `
+        <div class="cs-dialog">
+          <div class="cs-title">${title}</div>
+          <div class="cs-msg">${String(message)}</div>
+          <div class="cs-actions">
+            <button class="cs-btn" data-act="cancel">取消</button>
+            <button class="cs-btn primary" data-act="ok">确认</button>
+          </div>
+        </div>`;
+        mask.addEventListener('click', (e) => {
+            const act = e.target && e.target.dataset ? e.target.dataset.act : '';
+            if (act === 'ok') {
+                mask.remove();
+                resolve(true);
+            } else if (act === 'cancel' || e.target === mask) {
+                mask.remove();
+                resolve(false);
+            }
+        });
+        document.body.appendChild(mask);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     // Navigation
     const navItems = document.querySelectorAll('.nav-item');
@@ -74,7 +128,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const langTrigger = document.getElementById('lang-trigger');
     const langOptions = document.getElementById('lang-options');
+    const platformTrigger = document.getElementById('platform-trigger');
+    const platformOptions = document.getElementById('platform-options');
     let selectedLanguages = [];
+    let selectedPlatform = 'tiktok';
+
+    function platformLabel(value) {
+        if (value === 'instagram') return 'Instagram';
+        if (value === 'youtube') return 'YouTube';
+        return 'TikTok';
+    }
 
     // Initialize Options
     Object.entries(LANGUAGE_MAP).forEach(([code, name]) => {
@@ -102,10 +165,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         langOptions.classList.toggle('show');
     });
 
+    platformTrigger.addEventListener('click', () => {
+        platformOptions.classList.toggle('show');
+    });
+
+    platformOptions.querySelectorAll('.select-option').forEach((optionEl) => {
+        optionEl.addEventListener('click', () => {
+            selectedPlatform = optionEl.dataset.value || 'tiktok';
+            platformTrigger.textContent = platformLabel(selectedPlatform);
+            platformOptions.classList.remove('show');
+            platformOptions.querySelectorAll('.select-option').forEach((el) => el.classList.remove('selected'));
+            optionEl.classList.add('selected');
+        });
+    });
+
     // Close when clicking outside
     document.addEventListener('click', (e) => {
         if (!e.target.closest('#language-selector')) {
             langOptions.classList.remove('show');
+        }
+        if (!e.target.closest('#platform-selector')) {
+            platformOptions.classList.remove('show');
         }
     });
 
@@ -126,7 +206,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const emptyTasksEl = document.getElementById('empty-tasks');
 
     btnCreateTask.addEventListener('click', async () => {
-        const platform = document.getElementById('platform').value;
+        const platform = selectedPlatform;
         const keywordsText = document.getElementById('keywords').value;
         const concurrency = parseInt(document.getElementById('concurrency').value) || 1;
         const pageLimit = parseInt(document.getElementById('pageLimit').value) || 10;
@@ -138,7 +218,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const keywords = keywordsText.split('\n').map(k => k.trim()).filter(k => k);
 
         if (keywords.length === 0) {
-            alert('请输入至少一个关键词');
+            csAlert('请输入至少一个关键词');
             return;
         }
 
@@ -263,7 +343,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll('.btn-delete-task').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const id = e.target.dataset.id;
-                if (confirm('确定删除此任务吗？')) {
+                if (await csConfirm('确定删除此任务吗？')) {
                     const { tasks } = await chrome.storage.local.get('tasks');
                     const newTasks = tasks.filter(t => t.id !== id);
                     await chrome.storage.local.set({ tasks: newTasks });
@@ -306,7 +386,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const allData = [...(creators || []), ...(batchCollectedCreators || [])];
         if (allData.length === 0) {
-            alert('暂无数据可导出');
+            csAlert('暂无数据可导出');
             return;
         }
         
@@ -315,10 +395,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     btnClearData.addEventListener('click', async () => {
-        if (confirm('确定清空所有采集数据吗？')) {
+        if (await csConfirm('确定清空所有采集数据吗？')) {
             await chrome.storage.local.set({ creators: [], batchCollectedCreators: [] });
             updateStats();
-            alert('数据已清空');
+            csAlert('数据已清空');
         }
     });
 

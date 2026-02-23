@@ -141,6 +141,12 @@ async function checkTaskQueue() {
                                 console.log(`Started keyword "${nextKeywordObj.word}" for task ${task.id} on tab ${tab.id}`);
                             }
                         });
+                    } else {
+                        // Explicitly skip unsupported platforms so task queue won't hang forever.
+                        nextKeywordObj.status = 'completed';
+                        task.progress.completed++;
+                        tasksChanged = true;
+                        console.warn(`CreatorScan: Unsupported task platform "${task.platform}", keyword "${nextKeywordObj.word}" skipped.`);
                     }
                 } else {
                     // No pending keywords, check if all completed
@@ -168,7 +174,12 @@ function getSearchUrl(platform, keyword) {
     if (platform === 'tiktok') {
         return `https://www.tiktok.com/search/video?q=${encoded}`;
     }
-    // Future support for other platforms
+    if (platform === 'instagram') {
+        return `https://www.instagram.com/explore/search/keyword/?q=${encoded}`;
+    }
+    if (platform === 'youtube') {
+        return `https://www.youtube.com/results?search_query=${encoded}`;
+    }
     return null;
 }
 
@@ -196,6 +207,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 config: {
                     taskId: taskInfo.taskId,
                     keyword: taskInfo.keyword,
+                    platform: task?.platform,
                     initialPageCount: initialPageCount,
                     ...taskInfo.config
                 }

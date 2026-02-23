@@ -1,5 +1,6 @@
 
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
@@ -32,6 +33,7 @@ const StatCard: React.FC<{
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -102,7 +104,12 @@ const Dashboard: React.FC = () => {
         <div className="lg:col-span-4 bg-white dark:bg-slate-900 p-6 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900 dark:text-white">最新动态</h3>
-            <button className="text-xs font-bold text-primary hover:underline">查看全部</button>
+            <button
+              onClick={() => navigate('/influencers')}
+              className="text-xs font-bold text-primary hover:underline"
+            >
+              查看全部
+            </button>
           </div>
           <div className="space-y-6">
             {stats.recent_activity.length === 0 ? (

@@ -1,4 +1,59 @@
+function csEnsureUi() {
+    if (document.getElementById('cs-ui-style')) return;
+    const style = document.createElement('style');
+    style.id = 'cs-ui-style';
+    style.textContent = `
+    .cs-toast{position:fixed;right:16px;top:16px;background:#0f172a;color:#fff;padding:10px 14px;border-radius:10px;font-size:12px;z-index:99999;box-shadow:0 10px 28px rgba(0,0,0,.32);}
+    .cs-mask{position:fixed;inset:0;background:rgba(2,6,23,.45);display:flex;align-items:center;justify-content:center;z-index:99998;}
+    .cs-dialog{width:360px;max-width:calc(100vw - 24px);background:#fff;border-radius:12px;padding:14px;box-shadow:0 16px 40px rgba(0,0,0,.28);}
+    .cs-title{font-weight:700;font-size:14px;color:#111827;margin-bottom:6px;}
+    .cs-msg{font-size:12px;color:#4b5563;line-height:1.5;white-space:pre-wrap;}
+    .cs-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}
+    .cs-btn{border:1px solid #d1d5db;background:#fff;color:#374151;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;}
+    .cs-btn.primary{background:#FF0050;border-color:#FF0050;color:#fff;}
+    `;
+    document.head.appendChild(style);
+}
+
+function csAlert(message) {
+    csEnsureUi();
+    const el = document.createElement('div');
+    el.className = 'cs-toast';
+    el.textContent = String(message);
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2400);
+}
+
+function csConfirm(message, title = '确认操作') {
+    csEnsureUi();
+    return new Promise((resolve) => {
+        const mask = document.createElement('div');
+        mask.className = 'cs-mask';
+        mask.innerHTML = `
+        <div class="cs-dialog">
+          <div class="cs-title">${title}</div>
+          <div class="cs-msg">${String(message)}</div>
+          <div class="cs-actions">
+            <button class="cs-btn" data-act="cancel">取消</button>
+            <button class="cs-btn primary" data-act="ok">确认</button>
+          </div>
+        </div>`;
+        mask.addEventListener('click', (e) => {
+            const act = e.target && e.target.dataset ? e.target.dataset.act : '';
+            if (act === 'ok') {
+                mask.remove();
+                resolve(true);
+            } else if (act === 'cancel' || e.target === mask) {
+                mask.remove();
+                resolve(false);
+            }
+        });
+        document.body.appendChild(mask);
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+    const DEFAULT_SERVER_URL = 'http://localhost:8090';
     console.log('Results page loaded');
     if (typeof XLSX === 'undefined') {
         console.error('SheetJS (XLSX) library not found on load!');
@@ -44,7 +99,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const { [storageKey]: items } = await chrome.storage.local.get(storageKey);
         
         if (!items || items.length === 0) {
-            return alert('没有可挖掘的数据。');
+            return csAlert('没有可挖掘的数据。');
         }
         
         // Check for selected items first
@@ -74,14 +129,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         if (toEnrich.length === 0) {
-            return alert('所有项目已挖掘！请选择特定项目以强制重新采集。');
+            return csAlert('所有项目已挖掘！请选择特定项目以强制重新采集。');
         }
         
         const msg = isForce 
             ? `开始强制挖掘 ${toEnrich.length} 个选中的个人资料？(将覆盖现有数据)`
             : `开始挖掘 ${toEnrich.length} 个个人资料？这将在后台打开标签页。`;
 
-        if (confirm(msg)) {
+        if (await csConfirm(msg, '开始挖掘')) {
             chrome.runtime.sendMessage({ action: 'startEnrichment', items: toEnrich });
             updateEnrichmentUI(true, type);
             
@@ -94,11 +149,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    document.getElementById('stop-enrich-batch').addEventListener('click', () => stopEnrichment('batch'));
-    document.getElementById('stop-enrich-imported').addEventListener('click', () => stopEnrichment('imported'));
+    document.getElementById('stop-enrich-batch').addEventListener('click', async () => stopEnrichment('batch'));
+    document.getElementById('stop-enrich-imported').addEventListener('click', async () => stopEnrichment('imported'));
 
-    function stopEnrichment(type) {
-        if(confirm('停止挖掘？当前打开的标签页将在完成后关闭。')) {
+    async function stopEnrichment(type) {
+        if (await csConfirm('停止挖掘？当前打开的标签页将在完成后关闭。', '停止挖掘')) {
             chrome.runtime.sendMessage({ action: 'stopEnrichment' });
             updateEnrichmentUI(false, type);
         }
@@ -119,7 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateEnrichmentUI(false, 'imported');
             loadBatchData(); 
             loadImportedData();
-            alert('挖掘过程已完成！');
+            csAlert('挖掘过程已完成！');
         }
     });
 
@@ -131,7 +186,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let name = type === 'batch' ? 'TikTok 任务数据' : (type === 'imported' ? '导入的 URL' : '手动采集');
         let key = type === 'batch' ? 'batchCollectedCreators' : (type === 'imported' ? 'importedCreators' : 'creators');
         
-        if(confirm(`确定要清空 ${name} 数据吗？`)) {
+        if (await csConfirm(`确定要清空 ${name} 数据吗？`, '清空数据')) {
             await chrome.storage.local.set({ [key]: [] });
             if (type === 'batch') loadBatchData();
             else if (type === 'imported') loadImportedData();
@@ -142,7 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('export-batch').addEventListener('click', async () => {
         const { batchCollectedCreators } = await chrome.storage.local.get('batchCollectedCreators');
-        if(!batchCollectedCreators || batchCollectedCreators.length === 0) return alert('没有可导出的数据');
+        if(!batchCollectedCreators || batchCollectedCreators.length === 0) return csAlert('没有可导出的数据');
         
         // CSV Headers
         const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
@@ -167,7 +222,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('export-manual').addEventListener('click', async () => {
         const { creators } = await chrome.storage.local.get('creators');
-        if(!creators || creators.length === 0) return alert('没有可导出的数据');
+        if(!creators || creators.length === 0) return csAlert('没有可导出的数据');
         
         const headers = ['Platform', 'Email', 'Followers', 'ShareLinks', 'ProfileURL', 'Timestamp'];
         const rows = creators.map(c => [
@@ -185,11 +240,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('export-manual-xlsx').addEventListener('click', async () => {
         try {
             if (typeof XLSX === 'undefined') {
-                return alert('Excel 库未加载。请刷新页面或检查网络连接。');
+                return csAlert('Excel 库未加载。请刷新页面或检查网络连接。');
             }
 
             const { creators } = await chrome.storage.local.get('creators');
-            if(!creators || creators.length === 0) return alert('没有可导出的数据');
+            if(!creators || creators.length === 0) return csAlert('没有可导出的数据');
             
             const data = creators.map(c => ({
                 'Platform': c.platform,
@@ -203,13 +258,13 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadXlsx(data, 'manual_scrape_export.xlsx');
         } catch (error) {
             console.error('Export Excel Error:', error);
-            alert('导出失败: ' + error.message);
+            csAlert('导出失败: ' + error.message);
         }
     });
 
     document.getElementById('export-imported').addEventListener('click', async () => {
         const { importedCreators } = await chrome.storage.local.get('importedCreators');
-        if(!importedCreators || importedCreators.length === 0) return alert('没有可导出的数据');
+        if(!importedCreators || importedCreators.length === 0) return csAlert('没有可导出的数据');
         
         // CSV Headers
         const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
@@ -235,11 +290,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('export-imported-xlsx').addEventListener('click', async () => {
         try {
             if (typeof XLSX === 'undefined') {
-                return alert('Excel 库未加载。请刷新页面或检查网络连接。');
+                return csAlert('Excel 库未加载。请刷新页面或检查网络连接。');
             }
 
             const { importedCreators } = await chrome.storage.local.get('importedCreators');
-            if(!importedCreators || importedCreators.length === 0) return alert('没有可导出的数据');
+            if(!importedCreators || importedCreators.length === 0) return csAlert('没有可导出的数据');
             
             const data = importedCreators.map(c => ({
                 'Nickname': c.nickname,
@@ -260,18 +315,18 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadXlsx(data, 'imported_urls_export.xlsx');
         } catch (error) {
             console.error('Export Excel Error:', error);
-            alert('导出失败: ' + error.message);
+            csAlert('导出失败: ' + error.message);
         }
     });
 
     document.getElementById('export-batch-xlsx').addEventListener('click', async () => {
         try {
             if (typeof XLSX === 'undefined') {
-                return alert('Excel 库未加载。请刷新页面或检查网络连接。');
+                return csAlert('Excel 库未加载。请刷新页面或检查网络连接。');
             }
 
             const { batchCollectedCreators } = await chrome.storage.local.get('batchCollectedCreators');
-            if(!batchCollectedCreators || batchCollectedCreators.length === 0) return alert('没有可导出的数据');
+            if(!batchCollectedCreators || batchCollectedCreators.length === 0) return csAlert('没有可导出的数据');
             
             const data = batchCollectedCreators.map(c => ({
                 'Nickname': c.nickname,
@@ -292,7 +347,7 @@ document.addEventListener('DOMContentLoaded', () => {
             downloadXlsx(data, 'tiktok_batch_export.xlsx');
         } catch (error) {
             console.error('Export Excel Error:', error);
-            alert('导出失败: ' + error.message);
+            csAlert('导出失败: ' + error.message);
         }
     });
     
@@ -320,16 +375,21 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('confirm-import').addEventListener('click', async () => {
         const rawText = importInput.value;
         if (!rawText.trim()) {
-            return alert('请输入至少一个 URL。');
+            return csAlert('请输入至少一个 URL。');
         }
 
         const urls = rawText.split(/[\n\s]+/).filter(u => u.trim() !== '');
         const newItems = [];
+        let unsupportedCount = 0;
         
         // Regex to extract username from https://www.tiktok.com/@username
         const regex = /(?:tiktok\.com\/@|@)([\w\.]+)/;
 
         for (const url of urls) {
+            if (!/tiktok\.com/i.test(url) && !/^@[\w.]+$/.test(url)) {
+                unsupportedCount += 1;
+                continue;
+            }
             const match = url.match(regex);
             if (match && match[1]) {
                 let uniqueId = match[1].replace(/[.,;]$/, '');
@@ -351,7 +411,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (newItems.length === 0) {
-            return alert('未找到有效的 TikTok 个人资料 URL。');
+            if (unsupportedCount > 0) {
+                return csAlert(`未找到有效的 TikTok 个人资料 URL。\n检测到 ${unsupportedCount} 条非 TikTok 链接，已跳过。`);
+            }
+            return csAlert('未找到有效的 TikTok 个人资料 URL。');
         }
 
         // Save to storage
@@ -364,7 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (uniqueNewItems.length === 0) {
             importModal.style.display = 'none';
-            return alert('所有导入的个人资料已存在于列表中。');
+            return csAlert('所有导入的个人资料已存在于列表中。');
         }
 
         // Add to list
@@ -373,7 +436,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         loadImportedData();
         importModal.style.display = 'none';
-        alert(`成功导入 ${uniqueNewItems.length} 个新个人资料。\n跳过重复项: ${newItems.length - uniqueNewItems.length}`);
+        const skippedDuplicateCount = newItems.length - uniqueNewItems.length;
+        const unsupportedText = unsupportedCount > 0 ? `\n跳过非 TikTok 链接: ${unsupportedCount}` : '';
+        csAlert(`成功导入 ${uniqueNewItems.length} 个新个人资料。\n跳过重复项: ${skippedDuplicateCount}${unsupportedText}`);
     });
 
     // Batch Select Logic
@@ -389,7 +454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('open-settings').addEventListener('click', async () => {
         const { serverApiKey, serverUrl } = await chrome.storage.local.get(['serverApiKey', 'serverUrl']);
         if (serverApiKey) apiKeyInput.value = serverApiKey;
-        if (serverUrl) serverUrlInput.value = serverUrl;
+        serverUrlInput.value = serverUrl || DEFAULT_SERVER_URL;
         settingsModal.style.display = 'block';
     });
 
@@ -401,11 +466,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const apiKey = apiKeyInput.value.trim();
         const url = serverUrlInput.value.trim().replace(/\/$/, ''); // Remove trailing slash
         
-        if (!apiKey) return alert('请输入 API Key。');
-        if (!url) return alert('请输入服务器地址 URL。');
+        if (!apiKey) return csAlert('请输入 API Key。');
+        if (!url) return csAlert('请输入服务器地址 URL。');
+        if (!/^https?:\/\//i.test(url)) return csAlert('服务器地址必须以 http:// 或 https:// 开头。');
 
         await chrome.storage.local.set({ serverApiKey: apiKey, serverUrl: url });
-        alert('设置已保存！');
+        csAlert('设置已保存！');
         settingsModal.style.display = 'none';
     });
 
@@ -415,15 +481,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function pushData(type) {
         const { serverApiKey, serverUrl } = await chrome.storage.local.get(['serverApiKey', 'serverUrl']);
-        if (!serverApiKey || !serverUrl) {
-            return alert('请先在设置中配置 API Key 和服务器地址。');
+        if (!serverApiKey) {
+            return csAlert('请先在设置中配置 API Key。');
         }
+        const targetServerUrl = (serverUrl || DEFAULT_SERVER_URL).replace(/\/$/, '');
 
         const storageKey = type === 'batch' ? 'batchCollectedCreators' : 'importedCreators';
         const { [storageKey]: items } = await chrome.storage.local.get(storageKey);
 
         if (!items || items.length === 0) {
-            return alert('没有可推送的数据。');
+            return csAlert('没有可推送的数据。');
         }
 
         const btn = document.getElementById(`push-${type}`);
@@ -440,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 data: item
             }));
 
-            const response = await fetch(`${serverUrl}/creators/push`, {
+            const response = await fetch(`${targetServerUrl}/creators/push`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -451,14 +518,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (response.ok) {
                 const result = await response.json();
-                alert(`成功推送 ${result.length} 个创作者到服务器！`);
+                csAlert(`成功推送 ${result.length} 个创作者到服务器！`);
             } else {
                 const error = await response.text();
-                alert(`推送失败: ${response.status} ${response.statusText}\n${error}`);
+                csAlert(`推送失败: ${response.status} ${response.statusText}\n${error}`);
             }
         } catch (err) {
             console.error('Push error:', err);
-            alert(`推送失败: ${err.message}`);
+            csAlert(`推送失败: ${err.message}`);
         } finally {
             btn.textContent = originalText;
             btn.disabled = false;
@@ -489,7 +556,7 @@ function setupSelection(type) {
         const checkboxes = document.querySelectorAll(`.${type}-checkbox:checked`);
         if (checkboxes.length === 0) return;
         
-        if (confirm(`确定要删除这 ${checkboxes.length} 项吗？`)) {
+        if (await csConfirm(`确定要删除这 ${checkboxes.length} 项吗？`, '批量删除')) {
             const idsToDelete = Array.from(checkboxes).map(cb => cb.dataset.id);
             await deleteItems(type, idsToDelete);
         }
@@ -710,7 +777,7 @@ function attachCheckboxListeners(type) {
     const deleteButtons = document.querySelectorAll(`.delete-single[data-type="${type}"]`);
     deleteButtons.forEach(btn => {
         btn.addEventListener('click', async (e) => {
-            if(confirm('确定删除此项吗？')) {
+            if (await csConfirm('确定删除此项吗？', '删除确认')) {
                 const id = e.target.dataset.id;
                 await deleteItems(type, [id]);
             }

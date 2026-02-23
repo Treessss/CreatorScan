@@ -1,6 +1,6 @@
 
-from typing import Dict, Any, Optional, List
-from pydantic import BaseModel
+from typing import Dict, Any, Optional, List, Literal
+from pydantic import BaseModel, ConfigDict
 import datetime
 
 class CreatorBase(BaseModel):
@@ -11,6 +11,9 @@ class CreatorBase(BaseModel):
 class CreatorCreate(CreatorBase):
     pass
 
+class CreatorStatusUpdate(BaseModel):
+    status: Literal["none", "pending"]
+
 class CreatorResponse(CreatorBase):
     id: int
     owner_id: int
@@ -20,9 +23,9 @@ class CreatorResponse(CreatorBase):
     email_status: Optional[str] = "not_sent"
     has_replied: bool = False
     latest_reply_content: Optional[str] = None
+    manual_status: Optional[Literal["none", "pending"]] = "none"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CreatorPaginatedResponse(BaseModel):
     items: List[CreatorResponse]

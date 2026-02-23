@@ -3,13 +3,25 @@ from sqlalchemy import func, and_, desc
 from app.domains.dashboard import schemas
 from app.domains.creator.models import Creator
 from app.domains.email.models import EmailLog
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import random
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 class DashboardService:
     @staticmethod
+    def _calc_trend(current: float, previous: float) -> tuple[str, bool]:
+        if previous > 0:
+            trend = abs((current - previous) / previous * 100)
+        else:
+            trend = 100.0 if current > 0 else 0.0
+        return f"{trend:.1f}%", current >= previous
+
+    @staticmethod
     def get_stats(db: Session, user_id: int) -> schemas.DashboardStats:
-        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = _utcnow_naive().replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday = today - timedelta(days=1)
         
         # 1. Stats Cards
@@ -25,11 +37,22 @@ class DashboardService:
             Creator.created_at < today
         ).count()
         
-        creator_diff = today_creators - yesterday_creators
-        creator_trend = f"{abs(creator_diff / yesterday_creators * 100):.1f}%" if yesterday_creators > 0 else "100%"
+        creator_trend, creator_is_up = DashboardService._calc_trend(today_creators, yesterday_creators)
         
         # Emails Sent (Total)
-        total_emails = db.query(EmailLog).filter(EmailLog.sender_id == user_id).count()
+        total_emails = db.query(EmailLog).filter(EmailLog.sender_id == user_id, EmailLog.status == "sent").count()
+        today_emails = db.query(EmailLog).filter(
+            EmailLog.sender_id == user_id,
+            EmailLog.status == "sent",
+            EmailLog.sent_at >= today
+        ).count()
+        yesterday_emails = db.query(EmailLog).filter(
+            EmailLog.sender_id == user_id,
+            EmailLog.status == "sent",
+            EmailLog.sent_at >= yesterday,
+            EmailLog.sent_at < today
+        ).count()
+        email_trend, email_is_up = DashboardService._calc_trend(today_emails, yesterday_emails)
         
         # Reply Rate
         replied_emails = db.query(EmailLog).filter(
@@ -37,13 +60,27 @@ class DashboardService:
             EmailLog.replied == True
         ).count()
         reply_rate = f"{(replied_emails / total_emails * 100):.1f}%" if total_emails > 0 else "0%"
+        today_replied = db.query(EmailLog).filter(
+            EmailLog.sender_id == user_id,
+            EmailLog.replied == True,
+            EmailLog.sent_at >= today
+        ).count()
+        yesterday_replied = db.query(EmailLog).filter(
+            EmailLog.sender_id == user_id,
+            EmailLog.replied == True,
+            EmailLog.sent_at >= yesterday,
+            EmailLog.sent_at < today
+        ).count()
+        today_reply_rate = (today_replied / today_emails * 100) if today_emails > 0 else 0
+        yesterday_reply_rate = (yesterday_replied / yesterday_emails * 100) if yesterday_emails > 0 else 0
+        reply_trend, reply_is_up = DashboardService._calc_trend(today_reply_rate, yesterday_reply_rate)
         
         stat_cards = [
             schemas.StatCard(
                 label="今日新增网红",
                 value=str(today_creators),
                 trend=creator_trend,
-                isUp=creator_diff >= 0,
+                isUp=creator_is_up,
                 icon="person_add",
                 bgClass="bg-blue-50 dark:bg-blue-900/30",
                 iconColor="text-primary"
@@ -51,8 +88,8 @@ class DashboardService:
             schemas.StatCard(
                 label="已发送邮件",
                 value=str(total_emails),
-                trend="0%", # Calculating real trend requires more complex query, skipping for now
-                isUp=True,
+                trend=email_trend,
+                isUp=email_is_up,
                 icon="send",
                 bgClass="bg-purple-50 dark:bg-purple-900/30",
                 iconColor="text-purple-600"
@@ -60,8 +97,8 @@ class DashboardService:
             schemas.StatCard(
                 label="回复率",
                 value=reply_rate,
-                trend="0%",
-                isUp=True,
+                trend=reply_trend,
+                isUp=reply_is_up,
                 icon="chat_bubble",
                 bgClass="bg-orange-50 dark:bg-orange-900/30",
                 iconColor="text-orange-600"
@@ -117,7 +154,7 @@ class DashboardService:
         
         recent_activity = []
         for creator in recent_creators:
-            time_diff = datetime.utcnow() - creator.created_at
+            time_diff = _utcnow_naive() - creator.created_at
             if time_diff.total_seconds() < 60:
                 time_str = "刚刚"
             elif time_diff.total_seconds() < 3600:

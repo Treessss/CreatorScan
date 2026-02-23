@@ -7,6 +7,11 @@ pydantic[email]
 pydantic-settings
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt<5
 imap-tools
 python-multipart
 requests
+alembic
+pytest
+httpx
+pyotp

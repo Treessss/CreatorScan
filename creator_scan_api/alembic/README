@@ -1,0 +1,7 @@
+Alembic migration environment.
+
+Common commands (run from creator_scan_api/):
+
+  alembic upgrade head
+  alembic downgrade -1
+  alembic revision -m "your message" --autogenerate

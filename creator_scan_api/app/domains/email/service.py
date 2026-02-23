@@ -5,15 +5,47 @@ from app.domains.email.models import SmtpConfig
 from app.domains.user.repository import get_user_by_id
 from app.domains.creator.models import Creator
 from app.core.exceptions import AuthError
+from app.core.database import SessionLocal
 
 class EmailService:
+    @staticmethod
+    def send_batch_emails_task(
+        user_id: int,
+        creator_ids: list[int],
+        subject: str,
+        body: str,
+        smtp_config_id: int = None,
+        smtp_config_ids: list[int] | None = None,
+    ):
+        db = SessionLocal()
+        try:
+            EmailService.send_batch_emails(
+                db,
+                user_id,
+                creator_ids,
+                subject,
+                body,
+                smtp_config_id,
+                smtp_config_ids,
+            )
+        finally:
+            db.close()
+
+    @staticmethod
+    def sync_replies_task(user_id: int):
+        db = SessionLocal()
+        try:
+            EmailService.sync_replies(db, user_id)
+        finally:
+            db.close()
+
     @staticmethod
     def create_smtp_config(db: Session, user_id: int, config: schemas.SmtpConfigCreate):
         if config.is_default:
             # Unset other defaults
             db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id).update({"is_default": False})
         
-        db_config = SmtpConfig(**config.dict(), user_id=user_id)
+        db_config = SmtpConfig(**config.model_dump(), user_id=user_id)
         db.add(db_config)
         db.commit()
         db.refresh(db_config)
@@ -32,7 +64,7 @@ class EmailService:
         if config.is_default:
              db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id).update({"is_default": False})
              
-        for key, value in config.dict(exclude_unset=True).items():
+        for key, value in config.model_dump(exclude_unset=True).items():
             setattr(db_config, key, value)
             
         db.commit()
@@ -64,31 +96,71 @@ class EmailService:
             return False, str(e)
 
     @staticmethod
-    def send_batch_emails(db: Session, user_id: int, creator_ids: list[int], subject: str, body: str, smtp_config_id: int = None):
-        # Resolve SMTP Config
-        smtp_config = None
-        if smtp_config_id:
-             smtp_config = db.query(SmtpConfig).filter(SmtpConfig.id == smtp_config_id, SmtpConfig.user_id == user_id).first()
-        
-        if not smtp_config:
-             # Default
-             smtp_config = db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id, SmtpConfig.is_default == True).first()
-        
-        if not smtp_config:
-             # Fallback to any
-             smtp_config = db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id).first()
+    def find_unowned_creator_ids(db: Session, user_id: int, creator_ids: list[int]) -> list[int]:
+        if not creator_ids:
+            return []
 
-        if not smtp_config:
-             print(f"User {user_id} missing SMTP config")
-             return
+        owned_rows = db.query(Creator.id).filter(
+            Creator.id.in_(creator_ids),
+            Creator.owner_id == user_id
+        ).all()
+        owned_ids = {row[0] for row in owned_rows}
+        return sorted({cid for cid in creator_ids if cid not in owned_ids})
 
-        for cid in creator_ids:
-            creator = db.query(Creator).filter(Creator.id == cid).first()
+    @staticmethod
+    def send_batch_emails(
+        db: Session,
+        user_id: int,
+        creator_ids: list[int],
+        subject: str,
+        body: str,
+        smtp_config_id: int = None,
+        smtp_config_ids: list[int] | None = None,
+    ):
+        smtp_configs: list[SmtpConfig] = []
+        if smtp_config_ids:
+            smtp_configs = db.query(SmtpConfig).filter(
+                SmtpConfig.user_id == user_id,
+                SmtpConfig.id.in_(smtp_config_ids)
+            ).all()
+
+        if not smtp_configs and smtp_config_id:
+            selected = db.query(SmtpConfig).filter(
+                SmtpConfig.id == smtp_config_id,
+                SmtpConfig.user_id == user_id
+            ).first()
+            if selected:
+                smtp_configs = [selected]
+
+        if not smtp_configs:
+            default_cfg = db.query(SmtpConfig).filter(
+                SmtpConfig.user_id == user_id,
+                SmtpConfig.is_default == True
+            ).first()
+            if default_cfg:
+                smtp_configs = [default_cfg]
+
+        if not smtp_configs:
+            any_cfg = db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id).first()
+            if any_cfg:
+                smtp_configs = [any_cfg]
+
+        if not smtp_configs:
+            print(f"User {user_id} missing SMTP config")
+            return
+
+        for idx, cid in enumerate(creator_ids):
+            creator = db.query(Creator).filter(
+                Creator.id == cid,
+                Creator.owner_id == user_id
+            ).first()
             if not creator: continue
             
             email_addr = creator.data.get('email') or creator.data.get('Email')
+            recipient_name = creator.data.get('nickname') or creator.data.get('name') or creator.unique_id
             if not email_addr: continue
             
+            smtp_config = smtp_configs[idx % len(smtp_configs)]
             success, error = utils.send_smtp(
                 smtp_config.host, smtp_config.port, smtp_config.username, smtp_config.password,
                 email_addr, subject, body
@@ -113,7 +185,7 @@ class EmailService:
         # Prepare check list
         criteria = []
         for log in sent_logs:
-            if log.recipient and log.recipient.data:
+            if log.recipient and log.recipient.owner_id == user_id and log.recipient.data:
                 email = log.recipient.data.get('email') or log.recipient.data.get('Email')
                 if email:
                     criteria.append({'email_log_id': log.id, 'recipient_email': email})
@@ -137,6 +209,7 @@ class EmailService:
         # This helper function injects status into creator objects
         # To avoid N+1, we could batch fetch latest logs
         for creator in creators:
+            creator.manual_status = (creator.data or {}).get("manual_status", "none")
             latest = repository.get_latest_log_for_recipient(db, creator.id)
             if latest:
                 creator.email_status = latest.status

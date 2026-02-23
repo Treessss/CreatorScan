@@ -1,10 +1,14 @@
 
 from sqlalchemy.orm import Session
+from fastapi import HTTPException, status
+import pyotp
 from app.domains.user import repository, schemas
 from app.domains.user.audit_service import AuditService
 from app.core.exceptions import PermissionError, AuthError
+from app.core.security import verify_password
 
 class UserService:
+    TWO_FA_ISSUER = "CreatorScan"
     @staticmethod
     def register_master(db: Session, user: schemas.UserCreate):
         if repository.get_user_by_username(db, user.username):
@@ -74,12 +78,82 @@ class UserService:
 
     @staticmethod
     def update_profile(db: Session, user_id: int, profile: schemas.UserUpdateProfile):
+        if profile.username:
+            existing = repository.get_user_by_username(db, profile.username)
+            if existing and existing.id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Username already exists",
+                )
         updated_user = repository.update_user_profile(db, user_id, profile)
         AuditService.create_log(db, user_id, "update_profile", target_type="user", target_id=user_id, details=f"User profile updated")
         return updated_user
 
     @staticmethod
-    def update_password(db: Session, user_id: int, password: str):
-        updated_user = repository.update_password(db, user_id, password)
+    def update_password(db: Session, user_id: int, current_password: str, new_password: str):
+        user = repository.get_user_by_id(db, user_id)
+        if not user:
+            raise AuthError("User not found")
+        if not verify_password(current_password, user.hashed_password):
+            raise PermissionError("Current password is incorrect")
+        if current_password == new_password:
+            raise PermissionError("New password must be different from current password")
+
+        updated_user = repository.update_password(db, user_id, new_password)
         AuditService.create_log(db, user_id, "update_password", target_type="user", target_id=user_id, details=f"User password updated")
         return updated_user
+
+    @staticmethod
+    def generate_2fa_setup(db: Session, user_id: int):
+        user = repository.get_user_by_id(db, user_id)
+        if not user:
+            raise AuthError("User not found")
+
+        secret = pyotp.random_base32()
+        user.two_fa_temp_secret = secret
+        db.commit()
+
+        uri = pyotp.TOTP(secret).provisioning_uri(name=user.username, issuer_name=UserService.TWO_FA_ISSUER)
+        AuditService.create_log(db, user_id, "generate_2fa_setup", target_type="user", target_id=user_id, details="Generated 2FA setup secret")
+        return {"secret": secret, "otpauth_url": uri}
+
+    @staticmethod
+    def enable_2fa(db: Session, user_id: int, code: str):
+        user = repository.get_user_by_id(db, user_id)
+        if not user:
+            raise AuthError("User not found")
+        if user.two_fa_enabled:
+            return user
+        if not user.two_fa_temp_secret:
+            raise PermissionError("2FA setup not initialized")
+
+        if not pyotp.TOTP(user.two_fa_temp_secret).verify(code, valid_window=1):
+            raise PermissionError("Invalid 2FA code")
+
+        user.two_fa_secret = user.two_fa_temp_secret
+        user.two_fa_temp_secret = None
+        user.two_fa_enabled = True
+        db.commit()
+        db.refresh(user)
+        AuditService.create_log(db, user_id, "enable_2fa", target_type="user", target_id=user_id, details="Enabled 2FA")
+        return user
+
+    @staticmethod
+    def disable_2fa(db: Session, user_id: int, current_password: str, code: str):
+        user = repository.get_user_by_id(db, user_id)
+        if not user:
+            raise AuthError("User not found")
+        if not user.two_fa_enabled or not user.two_fa_secret:
+            return user
+        if not verify_password(current_password, user.hashed_password):
+            raise PermissionError("Current password is incorrect")
+        if not pyotp.TOTP(user.two_fa_secret).verify(code, valid_window=1):
+            raise PermissionError("Invalid 2FA code")
+
+        user.two_fa_enabled = False
+        user.two_fa_secret = None
+        user.two_fa_temp_secret = None
+        db.commit()
+        db.refresh(user)
+        AuditService.create_log(db, user_id, "disable_2fa", target_type="user", target_id=user_id, details="Disabled 2FA")
+        return user

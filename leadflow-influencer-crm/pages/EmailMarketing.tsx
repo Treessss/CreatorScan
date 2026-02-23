@@ -2,15 +2,19 @@
 import React, { useState, useEffect } from 'react';
 import { smtpService, emailService, templateService, creatorService } from '../services/api';
 import { SmtpConfig, EmailTemplate, EmailLog, Influencer } from '../types';
+import { useFeedback } from '../components/FeedbackProvider';
+import CustomSelect from '../components/CustomSelect';
+import CustomMultiSelect from '../components/CustomMultiSelect';
 
 type MarketingTab = 'compose' | 'history' | 'templates';
 
 const EmailMarketing: React.FC = () => {
+  const { notify, confirm } = useFeedback();
   const [activeTab, setActiveTab] = useState<MarketingTab>('compose');
 
   // State for Compose
   const [smtpConfigs, setSmtpConfigs] = useState<SmtpConfig[]>([]);
-  const [selectedSmtpId, setSelectedSmtpId] = useState<number | undefined>();
+  const [selectedSmtpIds, setSelectedSmtpIds] = useState<number[]>([]);
   const [subject, setSubject] = useState("为 {InfluencerName} 准备的精彩合作机会");
   const [body, setBody] = useState(`你好 {InfluencerName}, 我一直在关注你在 {Platform} 上发布的近期内容...`);
   const [sending, setSending] = useState(false);
@@ -44,8 +48,8 @@ const EmailMarketing: React.FC = () => {
       setSmtpConfigs(data);
       // Auto select default or first
       const defaultCfg = data.find(c => c.is_default);
-      if (defaultCfg) setSelectedSmtpId(defaultCfg.id);
-      else if (data.length > 0) setSelectedSmtpId(data[0].id);
+      if (defaultCfg) setSelectedSmtpIds([defaultCfg.id]);
+      else if (data.length > 0) setSelectedSmtpIds([data[0].id]);
     } catch (err) {
       console.error(err);
     }
@@ -63,7 +67,7 @@ const EmailMarketing: React.FC = () => {
   const loadLogs = async () => {
     try {
       const data = await emailService.getLogs(0, 100);
-      setEmailLogs(data);
+      setEmailLogs(data.items || []);
     } catch (err) {
       console.error('Failed to load logs', err);
     }
@@ -105,13 +109,13 @@ const EmailMarketing: React.FC = () => {
   };
 
   const handleStartTask = async () => {
-    if (!selectedSmtpId) {
-      alert('请先选择一个发送邮箱配置。');
+    if (selectedSmtpIds.length === 0) {
+      notify('请先选择一个发送邮箱配置。', 'warning');
       return;
     }
 
     if (selectedCreatorIds.length === 0) {
-      alert('请至少选择一个收件人。');
+      notify('请至少选择一个收件人。', 'warning');
       return;
     }
 
@@ -119,23 +123,30 @@ const EmailMarketing: React.FC = () => {
         setActiveTab('compose'); // Switch to compose view to see progress
     }
 
-    if (confirm(`确定要向选中的 ${selectedCreatorIds.length} 位红人发送邮件吗？`)) {
-        setSending(true);
-        try {
-            await emailService.send({
-                creator_ids: selectedCreatorIds,
-                subject,
-                body,
-                smtp_config_id: selectedSmtpId
-            });
-            alert('任务已提交后台队列！');
-            loadLogs(); // Refresh logs immediately
-            setSelectedCreatorIds([]); // Clear selection
-        } catch (err: any) {
-            alert('启动任务失败: ' + err.message);
-        } finally {
-            setSending(false);
-        }
+    const ok = await confirm({
+      title: '确认发送邮件',
+      message: `确定要向选中的 ${selectedCreatorIds.length} 位红人发送邮件吗？`,
+      confirmText: '确认发送',
+      cancelText: '取消',
+      type: 'warning',
+    });
+    if (!ok) return;
+
+    setSending(true);
+    try {
+      await emailService.send({
+        creator_ids: selectedCreatorIds,
+        subject,
+        body,
+        smtp_config_ids: selectedSmtpIds
+      });
+      notify('任务已提交后台队列！', 'success');
+      loadLogs(); // Refresh logs immediately
+      setSelectedCreatorIds([]); // Clear selection
+    } catch (err: any) {
+      notify('启动任务失败: ' + err.message, 'error');
+    } finally {
+      setSending(false);
     }
   };
 
@@ -162,18 +173,25 @@ const EmailMarketing: React.FC = () => {
       setShowTemplateModal(false);
       loadTemplates();
     } catch (err: any) {
-      alert('保存模板失败: ' + err.message);
+      notify('保存模板失败: ' + err.message, 'error');
     }
   };
 
   const handleDeleteTemplate = async (id: number) => {
-    if (confirm('确定要删除这个模板吗？')) {
-      try {
-        await templateService.delete(id);
-        loadTemplates();
-      } catch (err: any) {
-        alert('删除失败: ' + err.message);
-      }
+    const ok = await confirm({
+      title: '删除模板',
+      message: '确定要删除这个模板吗？',
+      confirmText: '删除',
+      cancelText: '取消',
+      type: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await templateService.delete(id);
+      loadTemplates();
+      notify('模板已删除', 'success');
+    } catch (err: any) {
+      notify('删除失败: ' + err.message, 'error');
     }
   };
 
@@ -290,17 +308,15 @@ const EmailMarketing: React.FC = () => {
                   </div>
 
                   {smtpConfigs.length > 0 ? (
-                      <select
-                        className="w-full rounded-lg border-[#e7edf3] dark:border-slate-700 bg-background-light dark:bg-slate-800 text-sm focus:ring-primary text-slate-700 dark:text-slate-300 h-10 px-3"
-                        value={selectedSmtpId}
-                        onChange={(e) => setSelectedSmtpId(Number(e.target.value))}
-                      >
-                        {smtpConfigs.map(config => (
-                            <option key={config.id} value={config.id}>
-                                {config.sender_name || config.username} ({config.username}) {config.is_default ? '(默认)' : ''}
-                            </option>
-                        ))}
-                      </select>
+                      <CustomMultiSelect
+                        values={selectedSmtpIds.map(String)}
+                        onChange={(vals) => setSelectedSmtpIds(vals.map((v) => Number(v)))}
+                        options={smtpConfigs.map((config) => ({
+                          value: String(config.id),
+                          label: `${config.sender_name || config.username} (${config.username})${config.is_default ? ' (默认)' : ''}`,
+                        }))}
+                        placeholder="选择发件账号"
+                      />
                   ) : (
                       <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-400 text-sm rounded-lg flex items-center gap-2">
                         <span className="material-symbols-outlined text-[18px]">warning</span>
@@ -308,10 +324,10 @@ const EmailMarketing: React.FC = () => {
                       </div>
                   )}
 
-                  {selectedSmtpId && (
+                  {selectedSmtpIds.length > 0 && (
                       <div className="mt-2 flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
                         <span className="material-symbols-outlined text-[14px]">check_circle</span>
-                        <span>账号已就绪</span>
+                        <span>已选择 {selectedSmtpIds.length} 个发件账号（轮询发送）</span>
                       </div>
                   )}
                 </div>
@@ -345,22 +361,20 @@ const EmailMarketing: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-semibold text-[#0d141b] dark:text-white mb-2">邮件模板</label>
-                  <select
-                    className="w-full rounded-lg border-[#e7edf3] dark:border-slate-700 bg-background-light dark:bg-slate-800 text-sm focus:ring-primary text-slate-700 dark:text-slate-300"
-                    onChange={(e) => {
-                        const tplId = Number(e.target.value);
-                        if (tplId) {
-                            const tpl = templates.find(t => t.id === tplId);
-                            if (tpl) handleUseTemplate(tpl);
-                        }
-                    }}
+                  <CustomSelect
                     value=""
-                  >
-                    <option value="">选择模板以快速填充...</option>
-                    {templates.map(tpl => (
-                        <option key={tpl.id} value={tpl.id}>{tpl.title}</option>
-                    ))}
-                  </select>
+                    onChange={(val) => {
+                      const tplId = Number(val);
+                      if (tplId) {
+                        const tpl = templates.find(t => t.id === tplId);
+                        if (tpl) handleUseTemplate(tpl);
+                      }
+                    }}
+                    placeholder="选择模板以快速填充..."
+                    options={[
+                      ...templates.map((tpl) => ({ value: String(tpl.id), label: tpl.title })),
+                    ]}
+                  />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-[#0d141b] dark:text-white mb-2">邮件主题</label>

@@ -4,6 +4,10 @@ from sqlalchemy.orm import relationship
 from app.core.database import Base
 import datetime
 
+
+def _utcnow_naive():
+    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+
 class Creator(Base):
     __tablename__ = "creators"
 
@@ -12,9 +16,9 @@ class Creator(Base):
     unique_id = Column(String, index=True) 
     data = Column(JSON) 
     owner_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow_naive)
     
     owner = relationship("app.domains.user.models.User", back_populates="creators")
     email_logs = relationship("app.domains.email.models.EmailLog", back_populates="recipient")
 
-    __table_args__ = (UniqueConstraint('platform', 'unique_id', name='_platform_uid_uc'),)
+    __table_args__ = (UniqueConstraint('owner_id', 'platform', 'unique_id', name='_owner_platform_uid_uc'),)

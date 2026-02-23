@@ -48,6 +48,7 @@ export interface EmailSendRequest {
     subject: string;
     body: string;
     smtp_config_id?: number;
+    smtp_config_ids?: number[];
 }
 
 export interface EmailTemplate {
