@@ -1,4 +1,5 @@
 import pyotp
+from pathlib import Path
 
 
 def _register(client, username: str = "owner", password: str = "secret123"):
@@ -61,6 +62,157 @@ def test_creator_crud_status_and_filter(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert deleted.status_code == 200
+
+
+def test_creator_push_normalizes_location_alias_for_crm(client):
+    user = _register(client, "loc_owner", "loc_owner123")
+    token = _login(client, "loc_owner", "loc_owner123")
+
+    push = client.post(
+        "/creators/push",
+        json=[
+            {
+                "platform": "TikTok",
+                "unique_id": "loc_user",
+                "data": {
+                    "nickname": "Loc User",
+                    "locationCreated": "SG",
+                    "region": "SG",
+                },
+            }
+        ],
+        headers={"X-API-Key": user["api_key"]},
+    )
+    assert push.status_code == 200
+    body = push.json()
+    assert body[0]["data"]["locationCreated"] == "SG"
+    assert body[0]["data"]["location"] == "SG"
+
+    listed = client.get("/creators/", headers={"Authorization": f"Bearer {token}"})
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["data"]["location"] == "SG"
+
+
+def test_creator_push_persists_multiple_tags(client):
+    user = _register(client, "tag_owner", "tag_owner123")
+    token = _login(client, "tag_owner", "tag_owner123")
+
+    push = client.post(
+        "/creators/push",
+        json=[
+            {
+                "platform": "TikTok",
+                "unique_id": "tag_user",
+                "data": {
+                    "nickname": "Tag User",
+                    "tags": ["女装", "重点", "女装"],
+                },
+            }
+        ],
+        headers={"X-API-Key": user["api_key"]},
+    )
+    assert push.status_code == 200
+    assert push.json()[0]["data"]["tags"] == ["女装", "重点"]
+
+    push_update = client.post(
+        "/creators/push",
+        json=[
+            {
+                "platform": "TikTok",
+                "unique_id": "tag_user",
+                "data": {
+                    "tags": "欧美, 重点; 高意向",
+                },
+            }
+        ],
+        headers={"X-API-Key": user["api_key"]},
+    )
+    assert push_update.status_code == 200
+    assert push_update.json()[0]["data"]["tags"] == ["欧美", "重点", "高意向"]
+
+    listed = client.get("/creators/", headers={"Authorization": f"Bearer {token}"})
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["data"]["tags"] == ["欧美", "重点", "高意向"]
+
+
+def test_creator_push_caches_remote_avatar_to_local_media(client, tmp_path, monkeypatch):
+    user = _register(client, "avatar_owner", "avatar_owner123")
+
+    from app.core.config import settings
+    from app.domains.creator.service import CreatorService
+
+    media_root = tmp_path / "media"
+    monkeypatch.setattr(settings, "MEDIA_ROOT", str(media_root))
+    monkeypatch.setattr(settings, "MEDIA_URL_PREFIX", "/media")
+    monkeypatch.setattr(
+        CreatorService,
+        "_download_remote_avatar",
+        staticmethod(lambda _url: (b"fake-image-bytes", ".png")),
+    )
+
+    source_avatar = "https://cdn.example.com/avatar/temp-signature.webp?x=123"
+    push = client.post(
+        "/creators/push",
+        json=[
+            {
+                "platform": "TikTok",
+                "unique_id": "avatar_user",
+                "data": {
+                    "nickname": "Avatar User",
+                    "avatar": source_avatar,
+                },
+            }
+        ],
+        headers={"X-API-Key": user["api_key"]},
+    )
+    assert push.status_code == 200
+    body = push.json()[0]["data"]
+    assert body["avatar"].startswith("/media/avatars/")
+    assert body["avatar_source_url"] == source_avatar
+
+    relative_media_path = body["avatar"].removeprefix("/media/")
+    saved_avatar = Path(settings.MEDIA_ROOT) / relative_media_path
+    assert saved_avatar.is_file()
+    assert saved_avatar.read_bytes() == b"fake-image-bytes"
+
+
+def test_creator_tags_update_single_and_batch_merge(client):
+    user = _register(client, "tag_edit_owner", "secret123")
+    token = _login(client, "tag_edit_owner", "secret123")
+
+    pushed = client.post(
+        "/creators/push",
+        json=[
+            {"platform": "TikTok", "unique_id": "tags_1", "data": {"tags": ["女装"]}},
+            {"platform": "TikTok", "unique_id": "tags_2", "data": {"tags": ["美妆"]}},
+        ],
+        headers={"X-API-Key": user["api_key"]},
+    )
+    assert pushed.status_code == 200
+    first_id = pushed.json()[0]["id"]
+    second_id = pushed.json()[1]["id"]
+
+    single = client.patch(
+        f"/creators/{first_id}/tags",
+        json={"tags": ["重点", "女装"], "mode": "merge"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert single.status_code == 200
+    assert single.json()["data"]["tags"] == ["女装", "重点"]
+
+    batch = client.post(
+        "/creators/tags/batch",
+        json={"creator_ids": [first_id, second_id], "tags": "高意向, 欧美", "mode": "merge"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert batch.status_code == 200
+    assert batch.json()["updated"] == 2
+
+    listed = client.get("/creators/", headers={"Authorization": f"Bearer {token}"})
+    assert listed.status_code == 200
+    rows = {row["id"]: row for row in listed.json()["items"]}
+    assert rows[first_id]["data"]["tags"] == ["女装", "重点", "高意向", "欧美"]
+    assert rows[second_id]["data"]["tags"] == ["美妆", "高意向", "欧美"]
 
 
 def test_creator_dedup_is_owner_scoped(client):

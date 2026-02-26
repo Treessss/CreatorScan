@@ -87,6 +87,41 @@
             border-bottom-color: var(--primary-color);
         }
 
+        .platform-menu {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 4px 0 16px;
+            padding: 10px 12px;
+            background: linear-gradient(180deg, #fafcff, #f5f8ff);
+            border: 1px solid #dbeafe;
+            border-radius: 10px;
+        }
+
+        .platform-menu-tab {
+            border: 1px solid #dbeafe;
+            background: #fff;
+            color: #334155;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: none;
+        }
+
+        .platform-menu-tab:hover {
+            border-color: #93c5fd;
+            color: #1d4ed8;
+            background: #eff6ff;
+        }
+
+        .platform-menu-tab.active {
+            border-color: #3b82f6;
+            background: #3b82f6;
+            color: #fff;
+        }
+
         .tab-content {
             display: none;
             animation: fadeIn 0.3s;
@@ -316,17 +351,25 @@
     </header>
 
     <div class="tabs">
-        <div class="tab active" data-target="batch-tab">TikTok 任务数据 <span id="batch-badge" class="stats-badge">0</span></div>
+        <div class="tab active" data-target="batch-tab">任务数据 <span id="batch-badge" class="stats-badge">0</span></div>
         <div class="tab" data-target="imported-tab">导入的 URL <span id="imported-badge" class="stats-badge">0</span></div>
         <div class="tab" data-target="manual-tab">手动采集 <span id="manual-badge" class="stats-badge">0</span></div>
+    </div>
+
+    <div class="platform-menu" id="dashboard-platform-menu" aria-label="平台筛选菜单">
+        <button type="button" class="platform-menu-tab active" data-platform="all">🌐 全部平台</button>
+        <button type="button" class="platform-menu-tab" data-platform="tiktok">🎵 TikTok</button>
+        <button type="button" class="platform-menu-tab" data-platform="instagram">📷 Instagram</button>
+        <button type="button" class="platform-menu-tab" data-platform="youtube">▶️ YouTube</button>
     </div>
 
     <!-- Batch Scrape Content -->
     <div id="batch-tab" class="tab-content active">
         <div class="actions">
             <button id="refresh-batch" class="btn-primary">🔄 刷新</button>
-            <button id="enrich-batch" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">🔍 深度挖掘 (补全详情)</button>
-            <button id="stop-enrich-batch" class="btn-danger" style="display: none;">⏹ 停止挖掘</button>
+            <button id="enrich-batch" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">⚡ 自动补全 (未完成项)</button>
+            <button id="stop-enrich-batch" class="btn-danger" style="display: none;">⏹ 停止补全</button>
+            <button id="delete-no-email-batch" class="btn-danger" style="background-color: #fa541c; border-color: #fa541c; color: #fff;">🧹 删除无邮箱</button>
             <button id="delete-selected-batch" class="btn-danger" style="display: none;">🗑 删除选中</button>
             <button id="export-batch" class="btn-success">📤 导出 CSV</button>
             <button id="export-batch-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
@@ -342,6 +385,7 @@
                         <th>昵称</th>
                         <th>Handle (@ID)</th>
                         <th>粉丝数</th>
+                        <th>地理位置</th>
                         <th>邮箱</th>
                         <th>外部链接</th>
                         <th>签名</th>
@@ -365,6 +409,7 @@
             <button id="import-urls" class="btn-primary" style="background-color: #722ed1; border-color: #722ed1;">📥 导入 URL</button>
             <button id="enrich-imported" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">🔍 深度挖掘 (补全详情)</button>
             <button id="stop-enrich-imported" class="btn-danger" style="display: none;">⏹ 停止挖掘</button>
+            <button id="delete-no-email-imported" class="btn-danger" style="background-color: #fa541c; border-color: #fa541c; color: #fff;">🧹 删除无邮箱</button>
             <button id="delete-selected-imported" class="btn-danger" style="display: none;">🗑 删除选中</button>
             <button id="export-imported" class="btn-success">📤 导出 CSV</button>
             <button id="export-imported-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
@@ -380,6 +425,7 @@
                         <th>昵称</th>
                         <th>Handle (@ID)</th>
                         <th>粉丝数</th>
+                        <th>地理位置</th>
                         <th>邮箱</th>
                         <th>外部链接</th>
                         <th>签名</th>
@@ -400,6 +446,7 @@
     <div id="manual-tab" class="tab-content">
         <div class="actions">
             <button id="refresh-manual" class="btn-primary">🔄 刷新</button>
+            <button id="delete-no-email-manual" class="btn-danger" style="background-color: #fa541c; border-color: #fa541c; color: #fff;">🧹 删除无邮箱</button>
             <button id="delete-selected-manual" class="btn-danger" style="display: none;">🗑 删除选中</button>
             <button id="export-manual" class="btn-success">📤 导出 CSV</button>
             <button id="export-manual-xlsx" class="btn-success" style="background-color: #389e0d; border-color: #389e0d;">📊 导出 Excel</button>
@@ -459,6 +506,30 @@
         <div class="modal-footer">
             <button id="cancel-import" class="btn-danger" style="margin-right:10px;">取消</button>
             <button id="confirm-import" class="btn-primary">导入并添加到列表</button>
+        </div>
+    </div>
+</div>
+
+<!-- Push Tags Modal -->
+<div id="push-tags-modal" class="modal">
+    <div class="modal-content" style="width: 540px;">
+        <h3>🏷️ 推送标签</h3>
+        <p id="push-tags-help" style="margin-bottom:10px; color:#666; font-size:13px;">
+            为本次推送的数据添加标签（可多个）。支持英文逗号、中文逗号、分号或换行分隔。
+        </p>
+        <div class="form-group">
+            <label>标签（可选）</label>
+            <textarea id="push-tags-input" class="form-control" placeholder="示例：TikTok, 女装, 重点跟进"></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+            <label style="display:flex;align-items:center;gap:8px;margin-bottom:0;">
+                <input type="checkbox" id="push-tags-merge" checked>
+                <span>与已有标签合并（不覆盖）</span>
+            </label>
+        </div>
+        <div class="modal-footer">
+            <button id="cancel-push-tags" class="btn-danger" style="margin-right:10px;">取消</button>
+            <button id="confirm-push-tags" class="btn-primary">确认并推送</button>
         </div>
     </div>
 </div>

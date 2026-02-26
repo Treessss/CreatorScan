@@ -33,16 +33,60 @@ def read_creators(
     search: str = None,
     has_email: bool = None,
     platform: str = None,
+    location: str = None,
     has_sharelink: bool = None,
     min_followers: int = None,
     max_followers: int = None,
     current_user: User = Depends(get_current_user), 
     db: Session = Depends(get_db)
 ):
-    result = service.CreatorService.get_creators(db, current_user, skip, limit, search, has_email, platform, has_sharelink, min_followers, max_followers)
+    result = service.CreatorService.get_creators(
+        db,
+        current_user,
+        skip,
+        limit,
+        search,
+        has_email,
+        platform,
+        location,
+        has_sharelink,
+        min_followers,
+        max_followers,
+    )
     # Enrich with email status
     enriched_items = EmailService.enrich_creators_with_email_status(db, result['items'])
     return {"items": enriched_items, "total": result['total']}
+
+@router.post("/tags/batch")
+def batch_update_creator_tags(
+    payload: schemas.CreatorBatchTagsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = service.CreatorService.batch_update_creator_tags(
+        db,
+        payload.creator_ids,
+        payload.tags,
+        payload.mode,
+        current_user,
+    )
+    if result is None:
+        raise HTTPException(status_code=403, detail="Creator not found or permission denied")
+    return result
+
+@router.patch("/{creator_id}/tags", response_model=schemas.CreatorResponse)
+def update_creator_tags(
+    creator_id: int,
+    payload: schemas.CreatorTagsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    creator = service.CreatorService.update_creator_tags(db, creator_id, payload.tags, payload.mode, current_user)
+    if not creator:
+        raise HTTPException(status_code=404, detail="Creator not found or permission denied")
+
+    enriched = EmailService.enrich_creators_with_email_status(db, [creator])
+    return enriched[0]
 
 @router.get("/{creator_id}", response_model=schemas.CreatorResponse)
 def get_creator(

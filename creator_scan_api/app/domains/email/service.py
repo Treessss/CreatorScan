@@ -63,8 +63,13 @@ class EmailService:
             
         if config.is_default:
              db.query(SmtpConfig).filter(SmtpConfig.user_id == user_id).update({"is_default": False})
-             
-        for key, value in config.model_dump(exclude_unset=True).items():
+
+        update_data = config.model_dump(exclude_unset=True)
+        # Frontend edit flow may send empty password placeholder; treat it as "unchanged".
+        if "password" in update_data and not str(update_data["password"] or "").strip():
+            update_data.pop("password", None)
+
+        for key, value in update_data.items():
             setattr(db_config, key, value)
             
         db.commit()

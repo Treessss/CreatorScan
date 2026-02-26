@@ -1,8 +1,10 @@
 
-import os
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 from pydantic_settings import SettingsConfigDict
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "CreatorScan API"
@@ -28,6 +30,8 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_ORIGIN_REGEX: str = r"chrome-extension://.*"
+    MEDIA_ROOT: str = str(_BACKEND_ROOT / "media")
+    MEDIA_URL_PREFIX: str = "/media"
 
     model_config = SettingsConfigDict(env_file=".env")
 

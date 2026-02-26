@@ -31,6 +31,8 @@ const Settings: React.FC = () => {
   const [isListView, setIsListView] = useState(true);
   const [testStatus, setTestStatus] = useState<{success: boolean, message: string} | null>(null);
   const [loading, setLoading] = useState(false);
+  const [smtpSaving, setSmtpSaving] = useState(false);
+  const [smtpTesting, setSmtpTesting] = useState(false);
 
   useEffect(() => {
     loadMyProfile();
@@ -106,6 +108,10 @@ const Settings: React.FC = () => {
       notify('请填写必要信息', 'warning');
       return;
     }
+    if (!editingConfig.port) {
+      notify('请填写端口号', 'warning');
+      return;
+    }
     
     // Check password only for new configs
     if (!editingConfig.id && !editingConfig.password) {
@@ -114,10 +120,17 @@ const Settings: React.FC = () => {
     }
 
     try {
+      setSmtpSaving(true);
+      const payload: Partial<SmtpConfig> = { ...editingConfig };
+      // 编辑时留空密码表示保留原密码，避免把密码覆盖成空字符串。
+      if (payload.id && !String(payload.password ?? '').trim()) {
+        delete payload.password;
+      }
+
       if (editingConfig.id) {
-        await smtpService.update(editingConfig.id, editingConfig);
+        await smtpService.update(editingConfig.id, payload);
       } else {
-        await smtpService.create(editingConfig);
+        await smtpService.create(payload);
       }
       setIsListView(true);
       loadSmtpConfigs();
@@ -125,12 +138,23 @@ const Settings: React.FC = () => {
     } catch (err) {
       console.error(err);
       notify('保存失败', 'error');
+    } finally {
+      setSmtpSaving(false);
     }
   };
 
   const handleTestConnection = async () => {
     if (!editingConfig) return;
+    if (!editingConfig.host || !editingConfig.username || !editingConfig.port) {
+      notify('请先填写服务器、端口和用户名', 'warning');
+      return;
+    }
+    if (!editingConfig.password || !String(editingConfig.password).trim()) {
+      notify('测试连接需要输入密码/应用专用密码', 'warning');
+      return;
+    }
     setTestStatus({ success: false, message: '正在连接...' });
+    setSmtpTesting(true);
     try {
       const res = await smtpService.test(editingConfig);
       setTestStatus({ 
@@ -139,6 +163,8 @@ const Settings: React.FC = () => {
       });
     } catch (err: any) {
       setTestStatus({ success: false, message: `错误: ${err.message}` });
+    } finally {
+      setSmtpTesting(false);
     }
   };
 
@@ -242,182 +268,203 @@ const Settings: React.FC = () => {
     }
   };
 
+  const closeSmtpEditor = () => {
+    setIsListView(true);
+    setEditingConfig(null);
+    setTestStatus(null);
+  };
+
   const renderSmtpContent = () => {
-    if (isListView) {
-      return (
+    return (
+      <>
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            <div className="border-b border-slate-100 dark:border-slate-800 px-8 py-6 flex justify-between items-center">
-              <div>
-                <h2 className="text-[#0d141b] dark:text-white text-[22px] font-bold leading-tight">邮件投递配置 (SMTP)</h2>
-                <p className="text-[#4c739a] dark:text-slate-400 text-base font-normal mt-2">
-                  管理用于发送营销邮件的 SMTP 服务器账户。
-                </p>
-              </div>
-              <button 
-                onClick={handleCreateNew}
-                className="flex items-center gap-2 bg-primary px-4 py-2 rounded-lg text-sm font-bold text-white hover:bg-primary/90 transition-all"
-              >
-                <span className="material-symbols-outlined text-[20px]">add</span>
-                添加新账号
-              </button>
+          <div className="border-b border-slate-100 dark:border-slate-800 px-8 py-6 flex justify-between items-center">
+            <div>
+              <h2 className="text-[#0d141b] dark:text-white text-[22px] font-bold leading-tight">邮件投递配置 (SMTP)</h2>
+              <p className="text-[#4c739a] dark:text-slate-400 text-base font-normal mt-2">
+                管理用于发送营销邮件的 SMTP 服务器账户。
+              </p>
             </div>
-            
-            <div className="p-8">
-              {loading ? (
-                <p className="text-center text-slate-500">加载中...</p>
-              ) : smtpConfigs.length === 0 ? (
-                <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
-                   <span className="material-symbols-outlined text-4xl text-slate-300 mb-3">mail_lock</span>
-                   <p className="text-slate-500 font-medium">暂无配置，请添加一个 SMTP 账号</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-4">
-                  {smtpConfigs.map(config => (
-                    <div key={config.id} className="border border-slate-200 dark:border-slate-700 rounded-lg p-5 flex items-center justify-between hover:border-primary/50 transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="size-10 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
-                          <span className="material-symbols-outlined">mail</span>
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-bold text-slate-900 dark:text-white">{config.username}</h3>
-                            {config.is_default && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-bold uppercase">Default</span>}
-                          </div>
-                          <p className="text-xs text-slate-500">{config.host}:{config.port} • {config.sender_name || 'No Name'}</p>
-                        </div>
+            <button 
+              onClick={handleCreateNew}
+              className="flex items-center gap-2 bg-primary px-4 py-2 rounded-lg text-sm font-bold text-white hover:bg-primary/90 transition-all"
+            >
+              <span className="material-symbols-outlined text-[20px]">add</span>
+              添加新账号
+            </button>
+          </div>
+          
+          <div className="p-8">
+            {loading ? (
+              <p className="text-center text-slate-500">加载中...</p>
+            ) : smtpConfigs.length === 0 ? (
+              <div className="text-center py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                 <span className="material-symbols-outlined text-4xl text-slate-300 mb-3">mail_lock</span>
+                 <p className="text-slate-500 font-medium">暂无配置，请添加一个 SMTP 账号</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-4">
+                {smtpConfigs.map(config => (
+                  <div key={config.id} className="border border-slate-200 dark:border-slate-700 rounded-lg p-5 flex items-center justify-between hover:border-primary/50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className="size-10 bg-blue-50 dark:bg-blue-900/20 rounded-full flex items-center justify-center text-blue-600 dark:text-blue-400">
+                        <span className="material-symbols-outlined">mail</span>
                       </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => handleEdit(config)} className="p-2 text-slate-400 hover:text-primary transition-colors">
-                          <span className="material-symbols-outlined">edit</span>
-                        </button>
-                        <button onClick={() => handleDelete(config.id)} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
-                          <span className="material-symbols-outlined">delete</span>
-                        </button>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-slate-900 dark:text-white">{config.username}</h3>
+                          {config.is_default && <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-bold uppercase">Default</span>}
+                        </div>
+                        <p className="text-xs text-slate-500">{config.host}:{config.port} • {config.sender_name || 'No Name'}</p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => handleEdit(config)} className="p-2 text-slate-400 hover:text-primary transition-colors">
+                        <span className="material-symbols-outlined">edit</span>
+                      </button>
+                      <button onClick={() => handleDelete(config.id)} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
+                        <span className="material-symbols-outlined">delete</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      );
-    }
 
-    return (
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-        <div className="border-b border-slate-100 dark:border-slate-800 px-8 py-6 flex items-center gap-4">
-           <button onClick={() => setIsListView(true)} className="size-8 flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-             <span className="material-symbols-outlined">arrow_back</span>
-           </button>
-           <h2 className="text-[#0d141b] dark:text-white text-[22px] font-bold">
-             {editingConfig?.id ? '编辑配置' : '添加新配置'}
-           </h2>
-        </div>
-        
-        <div className="px-8 py-8 flex flex-col gap-8">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-             <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">发件人名称</label>
-                <input 
-                  className="w-full h-11 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" 
-                  value={editingConfig?.sender_name || ''}
-                  onChange={e => setEditingConfig(prev => ({ ...prev!, sender_name: e.target.value }))}
-                  placeholder="e.g. LeadFlow Team"
-                />
-             </div>
-             <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">设为默认</label>
-                <div className="h-11 flex items-center">
-                  <label className="flex items-center cursor-pointer gap-2">
-                    <input 
-                      type="checkbox" 
-                      className="size-5 rounded border-slate-300 text-primary focus:ring-primary"
-                      checked={editingConfig?.is_default || false}
-                      onChange={e => setEditingConfig(prev => ({ ...prev!, is_default: e.target.checked }))}
+        {!isListView && editingConfig && (
+          <div className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4">
+            <div className="w-full max-w-4xl max-h-[90vh] bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                    {editingConfig?.id ? '编辑 SMTP 配置' : '添加 SMTP 配置'}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    请填写 SMTP 服务器信息与应用专用密码（授权码）。
+                  </p>
+                </div>
+                <button
+                  onClick={closeSmtpEditor}
+                  className="size-9 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  aria-label="关闭"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">发件人名称</label>
+                    <input
+                      className="w-full h-11 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      value={editingConfig?.sender_name || ''}
+                      onChange={e => setEditingConfig(prev => ({ ...prev!, sender_name: e.target.value }))}
+                      placeholder="例如：LeadFlow Team"
                     />
-                    <span className="text-sm text-slate-600 dark:text-slate-400">优先使用此账号发送邮件</span>
-                  </label>
-                </div>
-             </div>
-          </div>
+                  </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            <label className="text-[#0d141b] dark:text-white text-sm font-semibold flex items-center gap-1">
-              SMTP 服务器地址
-            </label>
-            <div className="md:col-span-2">
-              <input 
-                className="w-full h-11 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" 
-                value={editingConfig?.host || ''}
-                onChange={e => setEditingConfig(prev => ({ ...prev!, host: e.target.value }))}
-              />
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">设为默认账号</label>
+                    <label className="h-11 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex items-center cursor-pointer gap-2">
+                      <input 
+                        type="checkbox" 
+                        className="size-4 rounded border-slate-300 text-primary focus:ring-primary"
+                        checked={editingConfig?.is_default || false}
+                        onChange={e => setEditingConfig(prev => ({ ...prev!, is_default: e.target.checked }))}
+                      />
+                      <span className="text-sm text-slate-600 dark:text-slate-400">优先使用此账号发送邮件</span>
+                    </label>
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">SMTP 服务器地址</label>
+                    <input
+                      className="w-full h-11 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      value={editingConfig?.host || ''}
+                      onChange={e => setEditingConfig(prev => ({ ...prev!, host: e.target.value }))}
+                      placeholder="smtp.gmail.com"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">端口号</label>
+                    <input
+                      type="number"
+                      className="w-full h-11 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      value={editingConfig?.port || 587}
+                      onChange={e => setEditingConfig(prev => ({ ...prev!, port: parseInt(e.target.value) }))}
+                      placeholder="587"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">用户名（邮箱地址）</label>
+                    <input
+                      className="w-full h-11 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      value={editingConfig?.username || ''}
+                      onChange={e => setEditingConfig(prev => ({ ...prev!, username: e.target.value }))}
+                      placeholder="your@email.com"
+                    />
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <label className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                      应用专用密码 / 授权码
+                      {editingConfig?.id && <span className="text-xs font-normal text-slate-400 ml-2">（留空则不修改）</span>}
+                    </label>
+                    <input
+                      className="w-full h-11 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+                      type="password"
+                      placeholder={editingConfig?.id ? '如需更换请重新输入' : '请输入应用专用密码（必填）'}
+                      value={editingConfig?.password || ''}
+                      onChange={e => setEditingConfig(prev => ({ ...prev!, password: e.target.value }))}
+                    />
+                    <p className="text-xs text-slate-500">
+                      说明：多数邮箱服务（如 Gmail/QQ/Outlook 企业邮箱）需要填写应用专用密码/授权码，而不是登录密码。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="text-sm">
+                  {testStatus && (
+                    <span className={testStatus.success ? "text-green-600" : "text-red-500"}>
+                      {testStatus.message}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap justify-end gap-2">
+                  <button
+                    onClick={closeSmtpEditor}
+                    className="h-10 px-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleTestConnection}
+                    disabled={smtpTesting}
+                    className="h-10 px-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-60"
+                  >
+                    {smtpTesting ? '测试中...' : '测试连接'}
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={smtpSaving}
+                    className="h-10 px-5 rounded-lg bg-primary text-white text-sm font-bold hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    {smtpSaving ? '保存中...' : '确定并保存'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            <label className="text-[#0d141b] dark:text-white text-sm font-semibold flex items-center gap-1">端口号</label>
-            <div className="md:col-span-2">
-              <input 
-                type="number"
-                className="w-48 h-11 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" 
-                value={editingConfig?.port || 587}
-                onChange={e => setEditingConfig(prev => ({ ...prev!, port: parseInt(e.target.value) }))}
-              />
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            <label className="text-[#0d141b] dark:text-white text-sm font-semibold flex items-center gap-1">用户名 (邮箱地址)</label>
-            <div className="md:col-span-2">
-              <input 
-                className="w-full h-11 px-4 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" 
-                value={editingConfig?.username || ''}
-                onChange={e => setEditingConfig(prev => ({ ...prev!, username: e.target.value }))}
-              />
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-            <label className="text-[#0d141b] dark:text-white text-sm font-semibold flex items-center gap-1">
-              应用专用密码
-              {editingConfig?.id && <span className="text-xs font-normal text-slate-400 ml-2">(留空则不修改)</span>}
-            </label>
-            <div className="md:col-span-2 relative">
-              <input 
-                className="w-full h-11 px-4 pr-12 rounded-lg border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800" 
-                type="password" 
-                placeholder={editingConfig?.id ? "••••••••" : ""}
-                value={editingConfig?.password || ''}
-                onChange={e => setEditingConfig(prev => ({ ...prev!, password: e.target.value }))}
-              />
-            </div>
-          </div>
-          
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 mt-4 border-t border-slate-100 dark:border-slate-800">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              {testStatus && (
-                <span className={testStatus.success ? "text-green-600" : "text-red-500"}>
-                  {testStatus.success ? 'check_circle' : 'error'} {testStatus.message}
-                </span>
-              )}
-            </div>
-            <div className="flex gap-4">
-              <button 
-                onClick={handleTestConnection}
-                className="flex h-10 items-center justify-center rounded-lg px-6 text-sm font-bold text-[#0d141b] dark:text-white border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-              >
-                测试连接
-              </button>
-              <button 
-                onClick={handleSave}
-                className="flex h-10 items-center justify-center rounded-lg bg-primary px-8 text-sm font-bold text-white hover:bg-primary/90 shadow-md shadow-primary/20 transition-all"
-              >
-                保存配置
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+        )}
+      </>
     );
   };
 

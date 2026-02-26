@@ -19,6 +19,26 @@ function SingleSelectProbe() {
   );
 }
 
+function SearchableSelectProbe() {
+  const [value, setValue] = React.useState('');
+  return (
+    <div>
+      <CustomSelect
+        options={[
+          { label: '英国', value: 'GB|UK|United Kingdom|英国' },
+          { label: '越南', value: 'VN|Vietnam|越南' },
+          { label: '新加坡', value: 'SG|Singapore|新加坡' },
+        ]}
+        value={value}
+        onChange={setValue}
+        searchable
+        searchPlaceholder="搜索国家/地区"
+      />
+      <div data-testid="searchable-value">{value}</div>
+    </div>
+  );
+}
+
 function MultiSelectProbe() {
   const [values, setValues] = React.useState<string[]>([]);
   return (
@@ -59,5 +79,16 @@ describe('Custom select components', () => {
     fireEvent.click(instagram);
     expect(screen.getByTestId('multi-values')).toHaveTextContent('youtube');
   });
-});
 
+  it('CustomSelect supports searching options', () => {
+    render(<SearchableSelectProbe />);
+
+    fireEvent.click(screen.getByRole('button', { name: /请选择/i }));
+    fireEvent.change(screen.getByPlaceholderText('搜索国家/地区'), { target: { value: '越' } });
+    expect(screen.getByRole('button', { name: '越南' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '英国' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '越南' }));
+
+    expect(screen.getByTestId('searchable-value')).toHaveTextContent('VN|Vietnam|越南');
+  });
+});

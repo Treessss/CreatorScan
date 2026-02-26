@@ -2,6 +2,15 @@ import axios from 'axios';
 import { EmailSendRequest, SmtpConfig, EmailTemplate } from '../types';
 
 const API_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8090').replace(/\/$/, '');
+export const API_BASE_URL = API_URL;
+
+export const toApiAssetUrl = (value?: string | null): string => {
+  const url = String(value || '').trim();
+  if (!url) return '';
+  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
+  if (url.startsWith('/')) return `${API_URL}${url}`;
+  return url;
+};
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -109,11 +118,12 @@ export const userService = {
 };
 
 export const creatorService = {
-  getAll: async (skip = 0, limit = 100, search?: string, hasEmail?: boolean, platform?: string, hasShareLink?: boolean, minFollowers?: number, maxFollowers?: number) => {
+  getAll: async (skip = 0, limit = 100, search?: string, hasEmail?: boolean, platform?: string, hasShareLink?: boolean, minFollowers?: number, maxFollowers?: number, location?: string) => {
     const params: any = { skip, limit };
     if (search) params.search = search;
     if (hasEmail !== undefined && hasEmail !== null) params.has_email = hasEmail;
     if (platform) params.platform = platform;
+    if (location) params.location = location;
     if (hasShareLink !== undefined && hasShareLink !== null) params.has_sharelink = hasShareLink;
     if (minFollowers !== undefined && minFollowers !== null) params.min_followers = minFollowers;
     if (maxFollowers !== undefined && maxFollowers !== null) params.max_followers = maxFollowers;
@@ -140,6 +150,19 @@ export const creatorService = {
   },
   updateStatus: async (id: string, status: 'none' | 'pending') => {
     const response = await api.patch(`/creators/${id}/status`, { status });
+    return response.data;
+  },
+  updateTags: async (id: string, tags: string[] | string, mode: 'merge' | 'replace' = 'merge') => {
+    const response = await api.patch(`/creators/${id}/tags`, { tags, mode });
+    return response.data;
+  },
+  batchUpdateTags: async (ids: string[] | number[], tags: string[] | string, mode: 'merge' | 'replace' = 'merge') => {
+    const creatorIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+    const response = await api.post('/creators/tags/batch', {
+      creator_ids: creatorIds,
+      tags,
+      mode,
+    });
     return response.data;
   },
   batchDelete: async (ids: string[]) => {

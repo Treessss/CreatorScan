@@ -52,6 +52,89 @@ function csConfirm(message, title = '确认操作') {
     });
 }
 
+const DASHBOARD_PLATFORM_FILTER_STORAGE_KEY = 'creatorScanResultsPlatformFilter';
+let activeDashboardPlatformFilter = 'all';
+
+function normalizeDashboardPlatformFilter(value) {
+    const key = String(value || '').trim().toLowerCase();
+    if (['all', 'tiktok', 'instagram', 'youtube'].includes(key)) return key;
+    return 'all';
+}
+
+function getDashboardPlatformFilterLabel(value = activeDashboardPlatformFilter) {
+    const key = normalizeDashboardPlatformFilter(value);
+    if (key === 'tiktok') return 'TikTok';
+    if (key === 'instagram') return 'Instagram';
+    if (key === 'youtube') return 'YouTube';
+    return '全部平台';
+}
+
+function matchesDashboardPlatformFilter(item) {
+    if (activeDashboardPlatformFilter === 'all') return true;
+    return getCreatorPlatformKey(item) === activeDashboardPlatformFilter;
+}
+
+function formatBadgeCount(filteredCount, totalCount) {
+    const filtered = Number(filteredCount || 0);
+    const total = Number(totalCount || 0);
+    if (total <= 0) return '0';
+    if (filtered === total) return String(total);
+    return `${filtered}/${total}`;
+}
+
+function updateDashboardPlatformMenuUI() {
+    const menuButtons = document.querySelectorAll('.platform-menu-tab');
+    menuButtons.forEach((btn) => {
+        const isActive = normalizeDashboardPlatformFilter(btn.dataset.platform) === activeDashboardPlatformFilter;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+function getBatchAutoHydrationPlatformConfig() {
+    const filter = normalizeDashboardPlatformFilter(activeDashboardPlatformFilter);
+    if (filter === 'instagram') {
+        return {
+            platform: 'instagram',
+            label: 'Instagram',
+            startAction: 'startInstagramTaskHydrationRetry',
+            stopAction: 'stopInstagramTaskHydrationRetry',
+            statusAction: 'getInstagramTaskHydrationStatus',
+            completeAction: 'instagramTaskHydrationComplete'
+        };
+    }
+    if (filter === 'tiktok' || filter === 'all') {
+        return {
+            platform: 'tiktok',
+            label: 'TikTok',
+            startAction: 'startTikTokTaskHydrationRetry',
+            stopAction: 'stopTikTokTaskHydrationRetry',
+            statusAction: 'getTikTokTaskHydrationStatus',
+            completeAction: 'tiktokTaskHydrationComplete'
+        };
+    }
+    return null;
+}
+
+function updateBatchAutoHydrationButtonText() {
+    const runBtn = document.getElementById('enrich-batch');
+    const stopBtn = document.getElementById('stop-enrich-batch');
+    if (!runBtn || !stopBtn) return;
+
+    const config = getBatchAutoHydrationPlatformConfig();
+    if (!config) {
+        runBtn.textContent = '自动补全（暂不支持）';
+        runBtn.disabled = true;
+        stopBtn.disabled = true;
+        return;
+    }
+
+    runBtn.disabled = false;
+    stopBtn.disabled = false;
+    runBtn.textContent = `自动补全（${config.label}）`;
+    stopBtn.textContent = `停止自动补全（${config.label}）`;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const DEFAULT_SERVER_URL = 'http://localhost:8090';
     console.log('Results page loaded');
@@ -77,8 +160,27 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    activeDashboardPlatformFilter = normalizeDashboardPlatformFilter(
+        localStorage.getItem(DASHBOARD_PLATFORM_FILTER_STORAGE_KEY)
+    );
+    updateDashboardPlatformMenuUI();
+    updateBatchAutoHydrationButtonText();
+    document.querySelectorAll('.platform-menu-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const next = normalizeDashboardPlatformFilter(btn.dataset.platform);
+            if (next === activeDashboardPlatformFilter) return;
+            activeDashboardPlatformFilter = next;
+            localStorage.setItem(DASHBOARD_PLATFORM_FILTER_STORAGE_KEY, next);
+            updateDashboardPlatformMenuUI();
+            updateBatchAutoHydrationButtonText();
+            refreshBatchAutoHydrationUIForSelectedPlatform();
+            loadAllData();
+        });
+    });
+
     // Load Data
     loadAllData();
+    chrome.runtime.sendMessage({ action: 'queueLocalAvatarCacheBackfill' }).catch(() => {});
 
     // Button Listeners
     document.getElementById('refresh-batch').addEventListener('click', loadBatchData);
@@ -86,12 +188,95 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('refresh-imported').addEventListener('click', loadImportedData);
     
     document.getElementById('enrich-batch').addEventListener('click', async () => {
-        handleEnrichment('batch');
+        handleBatchAutoHydration();
     });
 
     document.getElementById('enrich-imported').addEventListener('click', async () => {
         handleEnrichment('imported');
     });
+
+    function refreshBatchAutoHydrationUIForSelectedPlatform() {
+        const config = getBatchAutoHydrationPlatformConfig();
+        if (!config) {
+            updateBatchAutoHydrationUI(false);
+            return;
+        }
+        chrome.runtime.sendMessage({ action: config.statusAction }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn(`CreatorScan: ${config.statusAction} error`, chrome.runtime.lastError);
+                updateBatchAutoHydrationUI(false);
+                return;
+            }
+            updateBatchAutoHydrationUI(!!(response && response.isHydrating));
+        });
+    }
+
+    async function handleBatchAutoHydration() {
+        console.log('Batch auto hydration retry button clicked');
+        const { batchCollectedCreators } = await chrome.storage.local.get('batchCollectedCreators');
+        const items = batchCollectedCreators || [];
+
+        const config = getBatchAutoHydrationPlatformConfig();
+        if (!config) {
+            return csAlert('当前平台暂不支持自动补全（仅支持 TikTok / Instagram）。');
+        }
+        const platformKey = config.platform;
+        const platformLabel = config.label;
+
+        if (items.length === 0) {
+            return csAlert('没有可自动补全的数据。');
+        }
+
+        const selectedIds = Array.from(document.querySelectorAll('.batch-checkbox:checked')).map(cb => cb.dataset.id);
+        const usingSelection = selectedIds.length > 0;
+
+        let candidates = items.filter((c) => {
+            if (!c || String(c.platform || '').toLowerCase() !== platformKey) return false;
+            if (usingSelection && !selectedIds.includes(String(c.id))) return false;
+            if (c.taskHydrationStatus === 'success') return false; // Only incomplete items
+            if (!c.id || !(c.uniqueId || c.userId)) return false;
+            return true;
+        });
+
+        if (candidates.length === 0) {
+            return csAlert(usingSelection
+                ? `选中的项目里没有需要自动补全的 ${platformLabel} 红人（可能已补全完成）。`
+                : `当前没有未完成自动补全的 ${platformLabel} 红人。`);
+        }
+
+        // Prioritize the newest rows first to improve visible completion speed.
+        candidates = candidates.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        const msg = usingSelection
+            ? `开始自动补全 ${candidates.length} 个选中的未完成项目？（不会打开后台标签页）`
+            : `开始自动补全 ${candidates.length} 个未完成项目？（不会打开后台标签页）`;
+
+        if (!(await csConfirm(msg, `自动补全（${platformLabel}）`))) {
+            return;
+        }
+
+        chrome.runtime.sendMessage(
+            { action: config.startAction, items: candidates },
+            (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error(`CreatorScan: ${config.startAction} error`, chrome.runtime.lastError);
+                    csAlert(`自动补全启动失败: ${chrome.runtime.lastError.message}`);
+                    return;
+                }
+                if (response && typeof response.queued === 'number' && response.queued === 0) {
+                    csAlert('没有可加入补全队列的数据。');
+                    return;
+                }
+                updateBatchAutoHydrationUI(true);
+                if (usingSelection) {
+                    document.querySelectorAll('.batch-checkbox:checked').forEach(cb => cb.checked = false);
+                    document.getElementById('batch-select-all').checked = false;
+                    updateDeleteBtn('batch');
+                }
+                csAlert(`已加入 ${platformLabel} 自动补全队列：${response?.queued ?? candidates.length} 条`);
+            }
+        );
+    }
 
     async function handleEnrichment(type) {
         console.log(`Enrich ${type} button clicked`);
@@ -149,8 +334,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    document.getElementById('stop-enrich-batch').addEventListener('click', async () => stopEnrichment('batch'));
+    document.getElementById('stop-enrich-batch').addEventListener('click', async () => stopBatchAutoHydration());
     document.getElementById('stop-enrich-imported').addEventListener('click', async () => stopEnrichment('imported'));
+
+    async function stopBatchAutoHydration() {
+        const config = getBatchAutoHydrationPlatformConfig();
+        if (!config) {
+            return csAlert('当前平台暂不支持自动补全停止操作。');
+        }
+        if (await csConfirm('停止自动补全？队列中的待处理项会被取消，进行中的请求会在本轮结束。', '停止自动补全')) {
+            chrome.runtime.sendMessage({ action: config.stopAction });
+            updateBatchAutoHydrationUI(false);
+        }
+    }
 
     async function stopEnrichment(type) {
         if (await csConfirm('停止挖掘？当前打开的标签页将在完成后关闭。', '停止挖掘')) {
@@ -162,28 +358,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check enrichment status on load
     chrome.runtime.sendMessage({ action: 'getEnrichmentStatus' }, (response) => {
         if (response && response.isEnriching) {
-            updateEnrichmentUI(true, 'batch');
             updateEnrichmentUI(true, 'imported');
         }
     });
+    refreshBatchAutoHydrationUIForSelectedPlatform();
 
     // Listen for completion
     chrome.runtime.onMessage.addListener((request) => {
         if (request.action === 'enrichmentComplete') {
-            updateEnrichmentUI(false, 'batch');
             updateEnrichmentUI(false, 'imported');
-            loadBatchData(); 
             loadImportedData();
             csAlert('挖掘过程已完成！');
+        } else if (request.action === 'tiktokTaskHydrationComplete' || request.action === 'instagramTaskHydrationComplete') {
+            const stopBtn = document.getElementById('stop-enrich-batch');
+            const currentConfig = getBatchAutoHydrationPlatformConfig();
+            const isCurrentPlatformCompletion = currentConfig && request.action === currentConfig.completeAction;
+            const wasRunning = isCurrentPlatformCompletion && stopBtn && stopBtn.style.display !== 'none';
+            refreshBatchAutoHydrationUIForSelectedPlatform();
+            loadBatchData();
+            if (wasRunning) {
+                csAlert(`自动补全已完成（${currentConfig.label}）。`);
+            }
         }
     });
 
     document.getElementById('clear-batch').addEventListener('click', () => clearData('batch'));
     document.getElementById('clear-imported').addEventListener('click', () => clearData('imported'));
     document.getElementById('clear-manual').addEventListener('click', () => clearData('manual'));
+    document.getElementById('delete-no-email-batch').addEventListener('click', () => deleteNoEmailItems('batch'));
+    document.getElementById('delete-no-email-imported').addEventListener('click', () => deleteNoEmailItems('imported'));
+    document.getElementById('delete-no-email-manual').addEventListener('click', () => deleteNoEmailItems('manual'));
 
     async function clearData(type) {
-        let name = type === 'batch' ? 'TikTok 任务数据' : (type === 'imported' ? '导入的 URL' : '手动采集');
+        let name = type === 'batch' ? '任务数据' : (type === 'imported' ? '导入的 URL' : '手动采集');
         let key = type === 'batch' ? 'batchCollectedCreators' : (type === 'imported' ? 'importedCreators' : 'creators');
         
         if (await csConfirm(`确定要清空 ${name} 数据吗？`, '清空数据')) {
@@ -194,22 +401,71 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function hasValidEmail(email) {
+        return !!(email && String(email).trim() && String(email).trim() !== '-');
+    }
+
+    async function deleteNoEmailItems(type) {
+        let storageKey;
+        let typeName;
+        if (type === 'batch') {
+            storageKey = 'batchCollectedCreators';
+            typeName = '任务采集';
+        } else if (type === 'imported') {
+            storageKey = 'importedCreators';
+            typeName = '导入 URL';
+        } else {
+            storageKey = 'creators';
+            typeName = '手动采集';
+        }
+
+        const result = await chrome.storage.local.get(storageKey);
+        const items = result[storageKey] || [];
+        if (!items.length) {
+            return csAlert('当前列表没有数据。');
+        }
+
+        const noEmailIds = [];
+        items.forEach((item) => {
+            if (hasValidEmail(item.email)) return;
+            if (type === 'manual') {
+                if (item.url) noEmailIds.push(item.url);
+            } else if (item.id !== undefined && item.id !== null) {
+                noEmailIds.push(String(item.id));
+            }
+        });
+
+        if (noEmailIds.length === 0) {
+            return csAlert('当前列表没有“无邮箱”的红人数据。');
+        }
+
+        const ok = await csConfirm(
+            `将删除 ${typeName} 列表中 ${noEmailIds.length} 条没有邮箱的红人数据。此操作不可撤销，是否继续？`,
+            '删除无邮箱数据'
+        );
+        if (!ok) return;
+
+        await deleteItems(type, noEmailIds);
+        csAlert(`已删除 ${noEmailIds.length} 条无邮箱数据。`);
+    }
+
 
     document.getElementById('export-batch').addEventListener('click', async () => {
         const { batchCollectedCreators } = await chrome.storage.local.get('batchCollectedCreators');
         if(!batchCollectedCreators || batchCollectedCreators.length === 0) return csAlert('没有可导出的数据');
         
         // CSV Headers
-        const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
+        const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Location', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
         const rows = batchCollectedCreators.map(c => [
-            escapeCsv(c.nickname),
-            escapeCsv(c.uniqueId),
-            c.followerCount,
-            escapeCsv(c.signature),
-            `https://www.tiktok.com/@${c.uniqueId}`,
-            escapeCsv(c.avatar),
-            c.platform,
-            new Date(c.timestamp).toLocaleString(),
+            escapeCsv(getCreatorDisplayName(c)),
+            escapeCsv(c.uniqueId || ''),
+            escapeCsv(getCreatorFollowerDisplay(c)),
+            escapeCsv(getCreatorLocationDisplay(c)),
+            escapeCsv(c.signature || ''),
+            escapeCsv(getCreatorProfileUrl(c)),
+            escapeCsv(c.avatar || ''),
+            c.platform || '',
+            c.timestamp ? new Date(c.timestamp).toLocaleString() : '',
             escapeCsv(c.email || ''),
             escapeCsv(c.shareLinks ? c.shareLinks.join('; ') : ''),
             c.id,
@@ -267,16 +523,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if(!importedCreators || importedCreators.length === 0) return csAlert('没有可导出的数据');
         
         // CSV Headers
-        const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
+        const headers = ['Nickname', 'UniqueId', 'FollowerCount', 'Location', 'Signature', 'ProfileURL', 'AvatarURL', 'Platform', 'Timestamp', 'Email', 'ShareLinks', 'ID', 'SecUid', 'DeepScraped'];
         const rows = importedCreators.map(c => [
-            escapeCsv(c.nickname),
-            escapeCsv(c.uniqueId),
-            c.followerCount,
-            escapeCsv(c.signature),
-            `https://www.tiktok.com/@${c.uniqueId}`,
-            escapeCsv(c.avatar),
-            c.platform,
-            new Date(c.timestamp).toLocaleString(),
+            escapeCsv(getCreatorDisplayName(c)),
+            escapeCsv(c.uniqueId || ''),
+            escapeCsv(getCreatorFollowerDisplay(c)),
+            escapeCsv(getCreatorLocationDisplay(c)),
+            escapeCsv(c.signature || ''),
+            escapeCsv(getCreatorProfileUrl(c)),
+            escapeCsv(c.avatar || ''),
+            c.platform || '',
+            c.timestamp ? new Date(c.timestamp).toLocaleString() : '',
             escapeCsv(c.email || ''),
             escapeCsv(c.shareLinks ? c.shareLinks.join('; ') : ''),
             c.id,
@@ -297,14 +554,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if(!importedCreators || importedCreators.length === 0) return csAlert('没有可导出的数据');
             
             const data = importedCreators.map(c => ({
-                'Nickname': c.nickname,
-                'UniqueId': c.uniqueId,
-                'FollowerCount': c.followerCount,
-                'Signature': c.signature,
-                'ProfileURL': `https://www.tiktok.com/@${c.uniqueId}`,
-                'AvatarURL': c.avatar,
-                'Platform': c.platform,
-                'Timestamp': new Date(c.timestamp).toLocaleString(),
+                'Nickname': getCreatorDisplayName(c),
+                'UniqueId': c.uniqueId || '',
+                'FollowerCount': getCreatorFollowerDisplay(c),
+                'Location': getCreatorLocationDisplay(c),
+                'Signature': c.signature || '',
+                'ProfileURL': getCreatorProfileUrl(c),
+                'AvatarURL': c.avatar || '',
+                'Platform': c.platform || '',
+                'Timestamp': c.timestamp ? new Date(c.timestamp).toLocaleString() : '',
                 'Email': c.email || '',
                 'ShareLinks': c.shareLinks ? c.shareLinks.join('; ') : '',
                 'ID': c.id,
@@ -329,14 +587,15 @@ document.addEventListener('DOMContentLoaded', () => {
             if(!batchCollectedCreators || batchCollectedCreators.length === 0) return csAlert('没有可导出的数据');
             
             const data = batchCollectedCreators.map(c => ({
-                'Nickname': c.nickname,
-                'UniqueId': c.uniqueId,
-                'FollowerCount': c.followerCount,
-                'Signature': c.signature,
-                'ProfileURL': `https://www.tiktok.com/@${c.uniqueId}`,
-                'AvatarURL': c.avatar,
-                'Platform': c.platform,
-                'Timestamp': new Date(c.timestamp).toLocaleString(),
+                'Nickname': getCreatorDisplayName(c),
+                'UniqueId': c.uniqueId || '',
+                'FollowerCount': getCreatorFollowerDisplay(c),
+                'Location': getCreatorLocationDisplay(c),
+                'Signature': c.signature || '',
+                'ProfileURL': getCreatorProfileUrl(c),
+                'AvatarURL': c.avatar || '',
+                'Platform': c.platform || '',
+                'Timestamp': c.timestamp ? new Date(c.timestamp).toLocaleString() : '',
                 'Email': c.email || '',
                 'ShareLinks': c.shareLinks ? c.shareLinks.join('; ') : '',
                 'ID': c.id,
@@ -479,6 +738,83 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('push-batch').addEventListener('click', () => pushData('batch'));
     document.getElementById('push-imported').addEventListener('click', () => pushData('imported'));
 
+    function normalizeTagsInput(value) {
+        if (Array.isArray(value)) {
+            const seen = new Set();
+            const out = [];
+            value.forEach(v => {
+                const s = String(v || '').trim();
+                if (!s) return;
+                const key = s.toLowerCase();
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(s);
+            });
+            return out;
+        }
+        const text = String(value || '');
+        return normalizeTagsInput(text.split(/[\n,，;；]+/g));
+    }
+
+    function mergeTags(existing, incoming, merge = true) {
+        const next = normalizeTagsInput(incoming);
+        if (!merge) return next;
+        return normalizeTagsInput([...(Array.isArray(existing) ? existing : []), ...next]);
+    }
+
+    function openPushTagsModal(type, count) {
+        const modal = document.getElementById('push-tags-modal');
+        const input = document.getElementById('push-tags-input');
+        const help = document.getElementById('push-tags-help');
+        const mergeCheckbox = document.getElementById('push-tags-merge');
+        const cancelBtn = document.getElementById('cancel-push-tags');
+        const confirmBtn = document.getElementById('confirm-push-tags');
+        if (!modal || !input || !help || !mergeCheckbox || !cancelBtn || !confirmBtn) {
+            return Promise.resolve({ cancelled: false, tags: [], merge: true });
+        }
+
+        help.textContent = `为本次${type === 'batch' ? '任务采集' : '导入 URL'}推送的 ${count} 条数据添加标签（可多个）。支持英文逗号、中文逗号、分号或换行分隔。`;
+        input.value = '';
+        mergeCheckbox.checked = true;
+        modal.style.display = 'block';
+        setTimeout(() => input.focus(), 0);
+
+        return new Promise((resolve) => {
+            let closed = false;
+            const finish = (result) => {
+                if (closed) return;
+                closed = true;
+                modal.style.display = 'none';
+                cleanup();
+                resolve(result);
+            };
+            const onCancel = () => finish({ cancelled: true, tags: [], merge: true });
+            const onConfirm = () => finish({
+                cancelled: false,
+                tags: normalizeTagsInput(input.value),
+                merge: !!mergeCheckbox.checked
+            });
+            const onBackdrop = (e) => {
+                if (e.target === modal) onCancel();
+            };
+            const onKeydown = (e) => {
+                if (e.key === 'Escape') onCancel();
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') onConfirm();
+            };
+            const cleanup = () => {
+                cancelBtn.removeEventListener('click', onCancel);
+                confirmBtn.removeEventListener('click', onConfirm);
+                modal.removeEventListener('click', onBackdrop);
+                document.removeEventListener('keydown', onKeydown);
+            };
+
+            cancelBtn.addEventListener('click', onCancel, { once: true });
+            confirmBtn.addEventListener('click', onConfirm, { once: true });
+            modal.addEventListener('click', onBackdrop);
+            document.addEventListener('keydown', onKeydown);
+        });
+    }
+
     async function pushData(type) {
         const { serverApiKey, serverUrl } = await chrome.storage.local.get(['serverApiKey', 'serverUrl']);
         if (!serverApiKey) {
@@ -493,18 +829,43 @@ document.addEventListener('DOMContentLoaded', () => {
             return csAlert('没有可推送的数据。');
         }
 
+        const pushTagConfig = await openPushTagsModal(type, items.length);
+        if (pushTagConfig.cancelled) return;
+
         const btn = document.getElementById(`push-${type}`);
         const originalText = btn.textContent;
         btn.textContent = '推送中...';
         btn.disabled = true;
 
         try {
+            const preparedItems = items.map((item) => {
+                const nextItem = { ...item };
+                const nextTags = mergeTags(item.tags, pushTagConfig.tags, pushTagConfig.merge);
+                if (nextTags.length > 0) {
+                    nextItem.tags = nextTags;
+                } else {
+                    delete nextItem.tags;
+                }
+                return nextItem;
+            });
+
+            // Persist tags locally when user provided push tags, so repeat pushes keep tags.
+            if (pushTagConfig.tags.length > 0) {
+                await chrome.storage.local.set({ [storageKey]: preparedItems });
+            }
+
             // Transform data to match API schema
             // API expects: { platform, unique_id, data }
-            const payload = items.map(item => ({
+            const payload = preparedItems.map(item => ({
+                // Normalize aliases before push so backend/frontend can consume one stable key.
+                // Keep original fields too (locationCreated/region) for traceability.
                 platform: item.platform || 'TikTok',
                 unique_id: item.uniqueId || item.id, // Fallback if uniqueId missing
-                data: item
+                data: {
+                    ...item,
+                    location: item.location || item.locationCreated || item.region || null,
+                    ...(item.tags && item.tags.length > 0 ? { tags: item.tags } : {})
+                }
             }));
 
             const response = await fetch(`${targetServerUrl}/creators/push`, {
@@ -518,7 +879,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (response.ok) {
                 const result = await response.json();
-                csAlert(`成功推送 ${result.length} 个创作者到服务器！`);
+                const tagText = pushTagConfig.tags.length > 0 ? `（标签: ${pushTagConfig.tags.join(', ')}）` : '';
+                csAlert(`成功推送 ${result.length} 个创作者到服务器！${tagText}`);
             } else {
                 const error = await response.text();
                 csAlert(`推送失败: ${response.status} ${response.statusText}\n${error}`);
@@ -591,6 +953,19 @@ function updateEnrichmentUI(isEnriching, type) {
     }
 }
 
+function updateBatchAutoHydrationUI(isRunning) {
+    const runBtn = document.getElementById('enrich-batch');
+    const stopBtn = document.getElementById('stop-enrich-batch');
+    if (!runBtn || !stopBtn) return;
+    if (isRunning) {
+        runBtn.style.display = 'none';
+        stopBtn.style.display = 'inline-block';
+    } else {
+        runBtn.style.display = 'inline-block';
+        stopBtn.style.display = 'none';
+    }
+}
+
 async function deleteItems(type, ids) {
     let storageKey;
     if (type === 'batch') storageKey = 'batchCollectedCreators';
@@ -622,6 +997,80 @@ async function loadAllData() {
     await Promise.all([loadBatchData(), loadManualData(), loadImportedData()]);
 }
 
+function getCreatorPlatformKey(item) {
+    return String(item?.platform || '').trim().toLowerCase();
+}
+
+function getCreatorProfileUrl(item) {
+    if (item && typeof item.profileUrl === 'string' && item.profileUrl.trim()) return item.profileUrl.trim();
+    if (item && typeof item.url === 'string' && item.url.trim()) return item.url.trim();
+
+    const uniqueId = String(item?.uniqueId || '').trim();
+    if (!uniqueId) return '';
+
+    const platform = getCreatorPlatformKey(item);
+    if (platform === 'instagram') {
+        return `https://www.instagram.com/${encodeURIComponent(uniqueId)}/`;
+    }
+    if (platform === 'youtube') {
+        if (uniqueId.startsWith('http://') || uniqueId.startsWith('https://')) return uniqueId;
+        if (uniqueId.startsWith('@')) return `https://www.youtube.com/${uniqueId}`;
+        return `https://www.youtube.com/@${encodeURIComponent(uniqueId)}`;
+    }
+    return `https://www.tiktok.com/@${encodeURIComponent(uniqueId)}`;
+}
+
+function getCreatorDisplayName(item) {
+    const nickname = String(item?.nickname || '').trim();
+    if (nickname) return nickname;
+    const uniqueId = String(item?.uniqueId || '').trim();
+    if (uniqueId) return uniqueId;
+    const authorId = String(item?.authorId || '').trim();
+    if (authorId) return authorId;
+    const id = item?.id;
+    return (id === undefined || id === null) ? '-' : String(id);
+}
+
+function getCreatorDisplayHandle(item) {
+    const uniqueId = String(item?.uniqueId || '').trim();
+    if (!uniqueId) {
+        const id = item?.id;
+        return (id === undefined || id === null) ? '-' : String(id);
+    }
+    const platform = getCreatorPlatformKey(item);
+    if (platform === 'instagram' || platform === 'tiktok') return `@${uniqueId}`;
+    return uniqueId;
+}
+
+function getCreatorFollowerDisplay(item) {
+    const value = item?.followerCount ?? item?.followers;
+    if (value === undefined || value === null) return '-';
+    const text = String(value).trim();
+    return text || '-';
+}
+
+function getCreatorLocationDisplay(item) {
+    const value = item?.location ?? item?.locationCreated ?? item?.region;
+    if (value === undefined || value === null) return '-';
+    const text = String(value).trim();
+    return text || '-';
+}
+
+function getCreatorSignatureDisplay(item) {
+    const value = item?.signature;
+    if (value === undefined || value === null) return '-';
+    const text = String(value).trim();
+    return text || '-';
+}
+
+function getCreatorTaskStatusIcon(item) {
+    if (item?.deepScraped) return '✅';
+    const status = String(item?.taskHydrationStatus || '').toLowerCase();
+    if (status === 'pending') return '⏳';
+    if (status === 'failed') return '⚠️';
+    return '';
+}
+
 async function loadImportedData() {
     const { importedCreators } = await chrome.storage.local.get('importedCreators');
     const tbody = document.querySelector('#imported-table tbody');
@@ -630,10 +1079,17 @@ async function loadImportedData() {
     
     tbody.innerHTML = '';
     
-    const data = importedCreators || [];
-    if (badge) badge.textContent = data.length;
+    const allData = importedCreators || [];
+    const data = allData.filter(matchesDashboardPlatformFilter);
+    if (badge) badge.textContent = formatBadgeCount(data.length, allData.length);
     
+    if (allData.length === 0) {
+        emptyState.textContent = '暂无导入的 URL 数据';
+        emptyState.style.display = 'block';
+        return;
+    }
     if (data.length === 0) {
+        emptyState.textContent = `当前平台（${getDashboardPlatformFilterLabel()}）下暂无导入的 URL 数据`;
         emptyState.style.display = 'block';
         return;
     }
@@ -641,31 +1097,45 @@ async function loadImportedData() {
     emptyState.style.display = 'none';
     
     // Sort by timestamp desc
-    data.sort((a, b) => b.timestamp - a.timestamp);
+    data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     
     data.forEach(item => {
         const tr = document.createElement('tr');
         const idStr = String(item.id);
-        
-        const profileUrl = `https://www.tiktok.com/@${item.uniqueId}`;
+
+        const profileUrl = getCreatorProfileUrl(item);
+        const profileLabel = getCreatorDisplayHandle(item);
+        const location = getCreatorLocationDisplay(item);
         const email = item.email || '-';
         const links = item.shareLinks ? item.shareLinks.join(', ') : '-';
-        const statusIcon = item.deepScraped ? '✅' : '';
+        const statusIcon = getCreatorTaskStatusIcon(item);
+        const signature = getCreatorSignatureDisplay(item);
+        const followerCount = getCreatorFollowerDisplay(item);
+        const displayName = getCreatorDisplayName(item);
+        const profileCell = profileUrl
+            ? `<a href="${escapeHtml(profileUrl)}" target="_blank">${escapeHtml(profileLabel)}</a>`
+            : escapeHtml(profileLabel);
 
         tr.innerHTML = `
             <td><input type="checkbox" class="imported-checkbox" data-id="${idStr}"></td>
-            <td><img src="${item.avatar}" class="avatar-img" onerror="this.src='icons/icon16.png'"></td>
-            <td>${escapeHtml(item.nickname)} ${statusIcon}</td>
-            <td class="link-cell"><a href="${profileUrl}" target="_blank">@${escapeHtml(item.uniqueId)}</a></td>
-            <td>${item.followerCount}</td>
+            <td><img src="${escapeHtml(getDisplayAvatar(item))}" class="avatar-img"></td>
+            <td>${escapeHtml(displayName)} ${statusIcon}</td>
+            <td class="link-cell">${profileCell}</td>
+            <td>${escapeHtml(followerCount)}</td>
+            <td title="${escapeHtml(String(location))}">${escapeHtml(String(location))}</td>
             <td>${escapeHtml(email)}</td>
             <td><div style="max-width: 150px; overflow:hidden; text-overflow:ellipsis; white-space: nowrap;" title="${escapeHtml(links)}">${escapeHtml(links)}</div></td>
-            <td title="${escapeHtml(item.signature)}">${truncate(item.signature, 50)}</td>
-            <td>${item.platform}</td>
-            <td style="font-size: 12px; color: #888;">${new Date(item.timestamp).toLocaleTimeString()}</td>
+            <td title="${escapeHtml(signature)}">${truncate(signature, 50)}</td>
+            <td>${escapeHtml(item.platform || '-')}</td>
+            <td style="font-size: 12px; color: #888;">${item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '-'}</td>
             <td><button class="btn-danger btn-sm delete-single" data-type="imported" data-id="${idStr}">删除</button></td>
         `;
         tbody.appendChild(tr);
+
+        const avatarImg = tr.querySelector('.avatar-img');
+        if (avatarImg) {
+            avatarImg.addEventListener('error', handleAvatarImageError, { once: true });
+        }
     });
     
     attachCheckboxListeners('imported');
@@ -679,10 +1149,17 @@ async function loadBatchData() {
     
     tbody.innerHTML = '';
     
-    const data = batchCollectedCreators || [];
-    badge.textContent = data.length;
+    const allData = batchCollectedCreators || [];
+    const data = allData.filter(matchesDashboardPlatformFilter);
+    badge.textContent = formatBadgeCount(data.length, allData.length);
     
+    if (allData.length === 0) {
+        emptyState.textContent = '暂无任务采集数据';
+        emptyState.style.display = 'block';
+        return;
+    }
     if (data.length === 0) {
+        emptyState.textContent = `当前平台（${getDashboardPlatformFilterLabel()}）下暂无任务采集数据`;
         emptyState.style.display = 'block';
         return;
     }
@@ -690,31 +1167,45 @@ async function loadBatchData() {
     emptyState.style.display = 'none';
     
     // Sort by timestamp desc
-    data.sort((a, b) => b.timestamp - a.timestamp);
+    data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     
     data.forEach(item => {
         const tr = document.createElement('tr');
         const idStr = String(item.id);
-        
-        const profileUrl = `https://www.tiktok.com/@${item.uniqueId}`;
+
+        const profileUrl = getCreatorProfileUrl(item);
+        const profileLabel = getCreatorDisplayHandle(item);
+        const location = getCreatorLocationDisplay(item);
         const email = item.email || '-';
         const links = item.shareLinks ? item.shareLinks.join(', ') : '-';
-        const statusIcon = item.deepScraped ? '✅' : '';
+        const statusIcon = getCreatorTaskStatusIcon(item);
+        const signature = getCreatorSignatureDisplay(item);
+        const followerCount = getCreatorFollowerDisplay(item);
+        const displayName = getCreatorDisplayName(item);
+        const profileCell = profileUrl
+            ? `<a href="${escapeHtml(profileUrl)}" target="_blank">${escapeHtml(profileLabel)}</a>`
+            : escapeHtml(profileLabel);
 
         tr.innerHTML = `
             <td><input type="checkbox" class="batch-checkbox" data-id="${idStr}"></td>
-            <td><img src="${item.avatar}" class="avatar-img" onerror="this.src='icons/icon16.png'"></td>
-            <td>${escapeHtml(item.nickname)} ${statusIcon}</td>
-            <td class="link-cell"><a href="${profileUrl}" target="_blank">@${escapeHtml(item.uniqueId)}</a></td>
-            <td>${item.followerCount}</td>
+            <td><img src="${escapeHtml(getDisplayAvatar(item))}" class="avatar-img"></td>
+            <td>${escapeHtml(displayName)} ${statusIcon}</td>
+            <td class="link-cell">${profileCell}</td>
+            <td>${escapeHtml(followerCount)}</td>
+            <td title="${escapeHtml(String(location))}">${escapeHtml(String(location))}</td>
             <td>${escapeHtml(email)}</td>
             <td><div style="max-width: 150px; overflow:hidden; text-overflow:ellipsis; white-space: nowrap;" title="${escapeHtml(links)}">${escapeHtml(links)}</div></td>
-            <td title="${escapeHtml(item.signature)}">${truncate(item.signature, 50)}</td>
-            <td>${item.platform}</td>
-            <td style="font-size: 12px; color: #888;">${new Date(item.timestamp).toLocaleTimeString()}</td>
+            <td title="${escapeHtml(signature)}">${truncate(signature, 50)}</td>
+            <td>${escapeHtml(item.platform || '-')}</td>
+            <td style="font-size: 12px; color: #888;">${item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '-'}</td>
             <td><button class="btn-danger btn-sm delete-single" data-type="batch" data-id="${idStr}">删除</button></td>
         `;
         tbody.appendChild(tr);
+
+        const avatarImg = tr.querySelector('.avatar-img');
+        if (avatarImg) {
+            avatarImg.addEventListener('error', handleAvatarImageError, { once: true });
+        }
     });
     
     attachCheckboxListeners('batch');
@@ -728,10 +1219,17 @@ async function loadManualData() {
     
     tbody.innerHTML = '';
     
-    const data = creators || [];
-    badge.textContent = data.length;
+    const allData = creators || [];
+    const data = allData.filter(matchesDashboardPlatformFilter);
+    badge.textContent = formatBadgeCount(data.length, allData.length);
     
+    if (allData.length === 0) {
+        emptyState.textContent = '暂无手动采集数据';
+        emptyState.style.display = 'block';
+        return;
+    }
     if (data.length === 0) {
+        emptyState.textContent = `当前平台（${getDashboardPlatformFilterLabel()}）下暂无手动采集数据`;
         emptyState.style.display = 'block';
         return;
     }
@@ -739,7 +1237,7 @@ async function loadManualData() {
     emptyState.style.display = 'none';
     
     // Sort by timestamp desc
-    data.sort((a, b) => b.timestamp - a.timestamp);
+    data.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     
     data.forEach(item => {
         const tr = document.createElement('tr');
@@ -783,6 +1281,19 @@ function attachCheckboxListeners(type) {
             }
         });
     });
+}
+
+function handleAvatarImageError(e) {
+    const img = e.target;
+    if (img && img.src && !img.src.endsWith('/icons/icon16.png') && !img.src.endsWith('icons/icon16.png')) {
+        img.src = 'icons/icon16.png';
+    }
+}
+
+function getDisplayAvatar(item) {
+    if (item && typeof item.avatarLocal === 'string' && item.avatarLocal.trim()) return item.avatarLocal;
+    if (item && typeof item.avatar === 'string' && item.avatar.trim()) return item.avatar;
+    return 'icons/icon16.png';
 }
 
 // Helpers

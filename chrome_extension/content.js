@@ -7,6 +7,16 @@ let isTaskScraping = false;
 let taskConfig = null;
 let taskInterceptCount = 0;
 let taskSeenProfileIds = new Set();
+let taskKeywordCompletionSent = false;
+let taskInstagramPacketSamples = [];
+let instagramTaskHydrationSession = null;
+let instagramTaskHydrationTimeoutTimer = null;
+let instagramTaskHydrationRecentPackets = [];
+const INSTAGRAM_TASK_PACKET_SAMPLE_LIMIT = 3;
+const INSTAGRAM_TASK_SAMPLE_SUMMARIES_SESSION_KEY = 'creatorScanInstagramTaskPacketSummaries';
+const INSTAGRAM_TASK_HYDRATION_SESSION_KEY = 'creatorScanInstagramTaskHydrationSession';
+const INSTAGRAM_TASK_HYDRATION_PACKET_BUFFER_LIMIT = 24;
+const INSTAGRAM_TASK_HYDRATION_PACKET_WAIT_MS = 8000;
 
 function csToast(message) {
     const id = 'cs-content-toast';
@@ -36,8 +46,14 @@ function csToast(message) {
 }
 
 // Initialize
-// Inject interceptor immediately on TikTok pages to catch early requests
-if (window.location.hostname.includes('tiktok.com')) {
+// Inject interceptor immediately on supported pages to catch early requests
+if (
+    window.location.hostname.includes('tiktok.com') ||
+    (
+        window.location.hostname.includes('instagram.com') &&
+        (isInstagramKeywordSearchPage() || isInstagramProfileRootPage())
+    )
+) {
     injectScript();
 }
 
@@ -54,6 +70,7 @@ if (savedTaskConfig) {
 } else {
     checkStatusAndRun();
 }
+restoreInstagramTaskHydrationFromSession();
 
 // Listen for messages
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -64,6 +81,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleDeepScrape();
     } else if (request.action === 'startTaskScrape') {
         startTaskScraping(request.config);
+    } else if (request.action === 'startInstagramTaskHydration') {
+        startInstagramTaskHydration(request.seed || {}, request.options || {});
+        sendResponse({ received: true });
     } else if (request.action === 'stopTask') {
         stopTaskScraping();
     }
@@ -84,13 +104,24 @@ function startTaskScraping(config) {
     // But background sends the authoritative 'pageCount' from storage.
     taskInterceptCount = config.initialPageCount || 0;
     taskSeenProfileIds = new Set();
+    taskKeywordCompletionSent = false;
     
     // Save to session for reliability
     sessionStorage.setItem('creatorScanTaskConfig', JSON.stringify(config));
     
-    // 1. Inject Interceptor Script (TikTok only)
-    if ((config.platform || detectPlatform()) === 'tiktok') {
+    const platform = config.platform || detectPlatform();
+
+    // 1. Inject Interceptor Script (TikTok / Instagram task packets)
+    if (platform === 'tiktok' || platform === 'instagram') {
         injectScript();
+        // Kick once immediately so hidden tabs can trigger the next request without waiting for the first interval tick.
+        try {
+            if (platform === 'tiktok') {
+                triggerTikTokTaskScroll();
+            } else {
+                triggerInstagramTaskScroll();
+            }
+        } catch (e) {}
     }
     
     // 2. Start Loop
@@ -103,8 +134,240 @@ function startTaskScraping(config) {
 function stopTaskScraping() {
     isTaskScraping = false;
     taskConfig = null;
+    taskKeywordCompletionSent = false;
     sessionStorage.removeItem('creatorScanTaskConfig');
+    taskInstagramPacketSamples = [];
     stopBatchScrapingLoop();
+}
+
+function requestTaskKeywordComplete(reason = 'unknown') {
+    if (!isTaskScraping || !taskConfig) return false;
+    if (taskKeywordCompletionSent) return false;
+    if (!taskConfig.taskId || !taskConfig.keyword) return false;
+
+    taskKeywordCompletionSent = true;
+    stopBatchScrapingLoop();
+
+    try {
+        chrome.runtime.sendMessage({
+            action: 'taskKeywordComplete',
+            taskId: taskConfig.taskId,
+            keyword: taskConfig.keyword,
+            reason
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('CreatorScan: taskKeywordComplete send error', chrome.runtime.lastError);
+                taskKeywordCompletionSent = false;
+            } else {
+                console.log('CreatorScan: task keyword completion requested', {
+                    reason,
+                    taskId: taskConfig?.taskId,
+                    keyword: taskConfig?.keyword,
+                    response
+                });
+            }
+        });
+        return true;
+    } catch (e) {
+        console.error('CreatorScan: Failed to send taskKeywordComplete', e);
+        taskKeywordCompletionSent = false;
+        return false;
+    }
+}
+
+function getTikTokScrollTargets() {
+    const candidateSelectors = [
+        '[data-e2e*="search"]',
+        '[data-e2e*="feed"]',
+        '[data-e2e*="list"]',
+        'main',
+        '[role="main"]',
+        'div[tabindex="0"]'
+    ];
+
+    const seen = new Set();
+    const targets = [];
+
+    function pushIfScrollable(el) {
+        if (!el || !(el instanceof Element) || seen.has(el)) return;
+        seen.add(el);
+
+        const sh = el.scrollHeight || 0;
+        const ch = el.clientHeight || 0;
+        if (sh <= ch + 80) return;
+
+        const style = getComputedStyle(el);
+        const overflowY = style.overflowY || '';
+        const scrollable = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+        if (!scrollable && el !== document.scrollingElement) return;
+
+        targets.push(el);
+    }
+
+    candidateSelectors.forEach((selector) => {
+        document.querySelectorAll(selector).forEach(pushIfScrollable);
+    });
+
+    pushIfScrollable(document.scrollingElement);
+    pushIfScrollable(document.documentElement);
+    pushIfScrollable(document.body);
+
+    // Fallback: scan a subset of elements and pick the largest scrollable containers.
+    if (targets.length === 0) {
+        const all = Array.from(document.querySelectorAll('div, main, section'));
+        all.forEach(pushIfScrollable);
+    }
+
+    return targets.sort((a, b) => {
+        const aSize = (a.scrollHeight - a.clientHeight);
+        const bSize = (b.scrollHeight - b.clientHeight);
+        return bSize - aSize;
+    });
+}
+
+function triggerTikTokTaskScroll() {
+    const scrollTargets = getTikTokScrollTargets();
+    const step = Math.max(Math.floor(window.innerHeight * 0.9), 900);
+
+    // Simulate wheel on likely containers first (TikTok often listens on inner container).
+    try {
+        const wheelEvt = new WheelEvent('wheel', {
+            deltaY: step,
+            deltaMode: 0, // PIXEL
+            bubbles: true,
+            cancelable: true,
+            view: window
+        });
+        scrollTargets.slice(0, 3).forEach((el) => el.dispatchEvent(wheelEvt));
+        document.body?.dispatchEvent(wheelEvt);
+        document.documentElement?.dispatchEvent(wheelEvt);
+        window.dispatchEvent(wheelEvt);
+    } catch (e) {
+        console.error('CreatorScan: Wheel dispatch failed', e);
+    }
+
+    let moved = false;
+    scrollTargets.slice(0, 5).forEach((el) => {
+        try {
+            const before = el.scrollTop || 0;
+            // Nudge first to ensure scroll listeners see delta in throttled/background tabs.
+            el.scrollTop = Math.max(0, before - 20);
+            el.scrollTop = before + step;
+            if ((el.scrollTop || 0) !== before) {
+                moved = true;
+            }
+            el.dispatchEvent(new Event('scroll', { bubbles: true }));
+        } catch (e) {
+            // ignore per element
+        }
+    });
+
+    // Also try window/document scrolling as fallback.
+    try {
+        const docEl = document.scrollingElement || document.documentElement || document.body;
+        const beforeWin = window.scrollY || docEl.scrollTop || 0;
+        window.scrollBy(0, -30);
+        window.scrollBy(0, step);
+        window.scrollTo({ top: Math.max(docEl.scrollHeight, document.body?.scrollHeight || 0), behavior: 'auto' });
+        window.dispatchEvent(new Event('scroll'));
+        const afterWin = window.scrollY || docEl.scrollTop || 0;
+        if (afterWin !== beforeWin) moved = true;
+    } catch (e) {
+        console.error('CreatorScan: Window scroll fallback failed', e);
+    }
+
+    // Final fallback: scroll last video card into view.
+    if (!moved) {
+        const lastCard = document.querySelector('a[href*="/video/"]:last-of-type') ||
+            Array.from(document.querySelectorAll('a[href*="/video/"]')).pop();
+        if (lastCard && typeof lastCard.scrollIntoView === 'function') {
+            try {
+                lastCard.scrollIntoView({ block: 'end', behavior: 'auto' });
+            } catch (e) {}
+        }
+    }
+
+    console.log('CreatorScan: TikTok task scroll tick', {
+        targets: scrollTargets.slice(0, 3).map(el => ({
+            tag: el.tagName,
+            id: el.id || '',
+            cls: typeof el.className === 'string' ? el.className.slice(0, 80) : '',
+            top: el.scrollTop || 0,
+            h: el.clientHeight || 0,
+            sh: el.scrollHeight || 0
+        }))
+    });
+}
+
+function triggerInstagramTaskScroll() {
+    const step = Math.max(Math.floor(window.innerHeight * 1.1), 900);
+    const seen = new Set();
+    const targets = [];
+
+    function addTarget(el) {
+        if (!el || !(el instanceof Element) || seen.has(el)) return;
+        seen.add(el);
+        const sh = el.scrollHeight || 0;
+        const ch = el.clientHeight || 0;
+        if (sh <= ch + 80) return;
+        targets.push(el);
+    }
+
+    addTarget(document.querySelector('main'));
+    addTarget(document.scrollingElement);
+    addTarget(document.documentElement);
+    addTarget(document.body);
+
+    document.querySelectorAll('main div, section div').forEach((el) => {
+        if (targets.length < 6) addTarget(el);
+    });
+
+    try {
+        const wheelEvt = new WheelEvent('wheel', {
+            deltaY: step,
+            deltaMode: 0,
+            bubbles: true,
+            cancelable: true,
+            view: window
+        });
+        targets.slice(0, 3).forEach((el) => el.dispatchEvent(wheelEvt));
+        window.dispatchEvent(wheelEvt);
+    } catch (e) {
+        console.error('CreatorScan: Instagram wheel dispatch failed', e);
+    }
+
+    let moved = false;
+    targets.slice(0, 6).forEach((el) => {
+        try {
+            const before = el.scrollTop || 0;
+            el.scrollTop = before + step;
+            if ((el.scrollTop || 0) !== before) moved = true;
+            el.dispatchEvent(new Event('scroll', { bubbles: true }));
+        } catch (e) {}
+    });
+
+    try {
+        const root = document.scrollingElement || document.documentElement || document.body;
+        const before = root ? (root.scrollTop || 0) : (window.scrollY || 0);
+        window.scrollBy(0, step);
+        window.scrollTo({ top: Math.max(root?.scrollHeight || 0, document.body?.scrollHeight || 0), behavior: 'auto' });
+        const after = root ? (root.scrollTop || 0) : (window.scrollY || 0);
+        if (after !== before) moved = true;
+    } catch (e) {
+        console.error('CreatorScan: Instagram window scroll failed', e);
+    }
+
+    console.log('CreatorScan: Instagram task scroll tick', {
+        route: window.location.pathname,
+        moved,
+        targets: targets.slice(0, 3).map((el) => ({
+            tag: el.tagName,
+            id: el.id || '',
+            top: el.scrollTop || 0,
+            h: el.clientHeight || 0,
+            sh: el.scrollHeight || 0
+        }))
+    });
 }
 
 
@@ -117,12 +380,7 @@ async function taskLoopStep() {
     // Check page limit
     if (taskInterceptCount >= taskConfig.pageLimit) {
         console.log(`CreatorScan: Task limit reached (${taskInterceptCount}/${taskConfig.pageLimit})`);
-        stopBatchScrapingLoop();
-        chrome.runtime.sendMessage({ 
-            action: 'taskKeywordComplete',
-            taskId: taskConfig.taskId,
-            keyword: taskConfig.keyword
-        });
+        requestTaskKeywordComplete('page_limit_interval');
         return;
     }
     
@@ -133,35 +391,19 @@ async function taskLoopStep() {
         return;
     }
     
-    if ((taskConfig.platform || detectPlatform()) !== 'tiktok') {
-        await runGenericTaskStep();
+    const platform = taskConfig.platform || detectPlatform();
+    if (platform === 'tiktok') {
+        // Hidden background tabs are timer-throttled; do the scroll synchronously in the interval tick.
+        triggerTikTokTaskScroll();
         return;
     }
 
-    // Scroll Logic for Background Tabs
-    // 1. Dispatch Wheel Event (Simulate mouse wheel)
-    // Many SPAs listen to 'wheel' or 'touchmove' rather than just 'scroll' event
-    try {
-        const wheelEvt = new WheelEvent('wheel', {
-            deltaY: 1000,
-            deltaMode: 1, // LINE
-            bubbles: true,
-            cancelable: true,
-            view: window
-        });
-        document.body.dispatchEvent(wheelEvt);
-        document.documentElement.dispatchEvent(wheelEvt);
-    } catch (e) { console.error('Wheel dispatch failed', e); }
+    if (platform === 'instagram') {
+        triggerInstagramTaskScroll();
+        return;
+    }
 
-    // 2. Scroll slightly up first to ensure "scroll event" triggers change
-    window.scrollBy(0, -50);
-    
-    // 3. Force scroll to bottom
-    setTimeout(() => {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'auto' });
-        // Manually dispatch scroll event as browsers might suppress it in background if layout didn't change enough
-        window.dispatchEvent(new Event('scroll'));
-    }, 100);
+    await runGenericTaskStep();
 }
 
 async function runGenericTaskStep() {
@@ -820,7 +1062,767 @@ window.addEventListener('message', (event) => {
             handleTikTokApiResponse(event.data.data, 'task');
         }
     }
+
+    if (event.data && event.data.type === 'INSTAGRAM_GRAPHQL_RESPONSE') {
+        const packet = event.data.packet;
+        rememberInstagramTaskHydrationPacket(packet);
+
+        if (instagramTaskHydrationSession?.active) {
+            handleInstagramTaskHydrationGraphqlPacket(packet)
+                .catch((err) => console.error('CreatorScan: handleInstagramTaskHydrationGraphqlPacket failed', err));
+        }
+
+        if (!isTaskScraping) return;
+        if ((taskConfig?.platform || detectPlatform()) !== 'instagram') return;
+        handleInstagramTaskGraphqlPacket(packet)
+            .catch((err) => console.error('CreatorScan: handleInstagramTaskGraphqlPacket failed', err));
+    }
 });
+
+function isInstagramKeywordSearchPage(pathname = window.location.pathname) {
+    return /^\/explore\/search\/keyword\/?$/.test(String(pathname || ''));
+}
+
+function isInstagramProfileRootPage(pathname = window.location.pathname, hostname = window.location.hostname) {
+    if (!String(hostname || '').includes('instagram.com')) return false;
+    const path = String(pathname || '');
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length !== 1) return false;
+    const blockedRoots = new Set([
+        'explore', 'accounts', 'reels', 'stories', 'direct', 'p', 'tv', 'reel',
+        'about', 'developer', 'legal', 'privacy', 'directory', 'challenge',
+        'api', 'oauth', 'web', 'ads', 'press'
+    ]);
+    const segment = String(parts[0] || '').trim().toLowerCase();
+    if (!segment) return false;
+    return !blockedRoots.has(segment);
+}
+
+function rememberInstagramTaskHydrationPacket(packet) {
+    if (!packet || typeof packet !== 'object') return;
+    instagramTaskHydrationRecentPackets.push(packet);
+    if (instagramTaskHydrationRecentPackets.length > INSTAGRAM_TASK_HYDRATION_PACKET_BUFFER_LIMIT) {
+        instagramTaskHydrationRecentPackets.splice(
+            0,
+            instagramTaskHydrationRecentPackets.length - INSTAGRAM_TASK_HYDRATION_PACKET_BUFFER_LIMIT
+        );
+    }
+}
+
+function clearInstagramTaskHydrationTimer() {
+    if (instagramTaskHydrationTimeoutTimer) {
+        clearTimeout(instagramTaskHydrationTimeoutTimer);
+        instagramTaskHydrationTimeoutTimer = null;
+    }
+}
+
+function persistInstagramTaskHydrationSession() {
+    if (!instagramTaskHydrationSession || !instagramTaskHydrationSession.active) return;
+    const {
+        seed,
+        startedAt,
+        reloadAttempted,
+        fallbackAttempted,
+        requestReason
+    } = instagramTaskHydrationSession;
+    const payload = {
+        seed: seed || null,
+        startedAt: startedAt || Date.now(),
+        reloadAttempted: !!reloadAttempted,
+        fallbackAttempted: !!fallbackAttempted,
+        requestReason: requestReason || null
+    };
+    try {
+        sessionStorage.setItem(INSTAGRAM_TASK_HYDRATION_SESSION_KEY, JSON.stringify(payload));
+    } catch (e) {
+        console.warn('CreatorScan: Failed to persist Instagram hydration session', e);
+    }
+}
+
+function clearInstagramTaskHydrationSessionState() {
+    clearInstagramTaskHydrationTimer();
+    instagramTaskHydrationSession = null;
+    try {
+        sessionStorage.removeItem(INSTAGRAM_TASK_HYDRATION_SESSION_KEY);
+    } catch (e) {}
+}
+
+function startInstagramTaskHydration(seed, options = {}) {
+    if (!seed || typeof seed !== 'object') return;
+    clearInstagramTaskHydrationTimer();
+    const uniqueId = String(seed.uniqueId || '').trim();
+    const authorId = String(seed.authorId || seed.id || '').trim();
+    if (!uniqueId && !authorId) return;
+
+    if (!isInstagramProfileRootPage()) {
+        console.warn('CreatorScan: startInstagramTaskHydration called on non-profile page', window.location.href);
+    }
+
+    injectScript();
+
+    const session = {
+        active: true,
+        seed: {
+            ...seed,
+            uniqueId: uniqueId || seed.uniqueId,
+            authorId: authorId || seed.authorId || seed.id,
+            id: seed.id,
+            profileUrl: seed.profileUrl || seed.url || (uniqueId ? `https://www.instagram.com/${encodeURIComponent(uniqueId)}/` : null)
+        },
+        startedAt: Number(options.startedAt || Date.now()),
+        reloadAttempted: !!options.reloadAttempted,
+        fallbackAttempted: !!options.fallbackAttempted,
+        requestReason: String(options.reason || 'background_start')
+    };
+    instagramTaskHydrationSession = session;
+    persistInstagramTaskHydrationSession();
+
+    console.log('CreatorScan: Started Instagram task hydration session', {
+        url: window.location.href,
+        uniqueId: session.seed.uniqueId,
+        authorId: session.seed.authorId,
+        reason: session.requestReason,
+        reloadAttempted: session.reloadAttempted
+    });
+
+    const consumedBuffered = tryProcessBufferedInstagramTaskHydrationPackets();
+    if (!consumedBuffered) {
+        scheduleInstagramTaskHydrationWait();
+    }
+}
+
+function restoreInstagramTaskHydrationFromSession() {
+    if (!isInstagramProfileRootPage()) return;
+    let raw = null;
+    try {
+        raw = sessionStorage.getItem(INSTAGRAM_TASK_HYDRATION_SESSION_KEY);
+    } catch (e) {}
+    if (!raw) return;
+    try {
+        const saved = JSON.parse(raw);
+        if (!saved || typeof saved !== 'object' || !saved.seed) return;
+        startInstagramTaskHydration(saved.seed, {
+            startedAt: saved.startedAt,
+            reloadAttempted: !!saved.reloadAttempted,
+            fallbackAttempted: !!saved.fallbackAttempted,
+            reason: saved.requestReason || 'session_restore'
+        });
+    } catch (e) {
+        console.warn('CreatorScan: Failed to restore Instagram hydration session', e);
+        clearInstagramTaskHydrationSessionState();
+    }
+}
+
+function scheduleInstagramTaskHydrationWait() {
+    clearInstagramTaskHydrationTimer();
+    if (!instagramTaskHydrationSession?.active) return;
+    instagramTaskHydrationTimeoutTimer = setTimeout(() => {
+        handleInstagramTaskHydrationNoPacketTimeout()
+            .catch((err) => console.error('CreatorScan: handleInstagramTaskHydrationNoPacketTimeout failed', err));
+    }, INSTAGRAM_TASK_HYDRATION_PACKET_WAIT_MS);
+}
+
+function findNestedValueByKey(node, targetKey, seen) {
+    if (!node || typeof node !== 'object') return undefined;
+    const guard = seen || new WeakSet();
+    if (guard.has(node)) return undefined;
+    guard.add(node);
+
+    if (Object.prototype.hasOwnProperty.call(node, targetKey)) {
+        return node[targetKey];
+    }
+
+    if (Array.isArray(node)) {
+        for (const item of node) {
+            const found = findNestedValueByKey(item, targetKey, guard);
+            if (found !== undefined) return found;
+        }
+        return undefined;
+    }
+
+    for (const value of Object.values(node)) {
+        const found = findNestedValueByKey(value, targetKey, guard);
+        if (found !== undefined) return found;
+    }
+
+    return undefined;
+}
+
+function summarizeInstagramTaskPacket(packet) {
+    const serp = findNestedValueByKey(packet?.response, 'xdt_fbsearch__top_serp_graphql');
+    const summary = {
+        timestamp: packet?.timestamp || Date.now(),
+        transport: packet?.transport || null,
+        method: packet?.method || null,
+        url: packet?.url || null,
+        requestQueryKeys: Object.keys(packet?.request?.query || {}),
+        responseTopKeys: packet?.response && typeof packet.response === 'object'
+            ? Object.keys(packet.response).slice(0, 20)
+            : [],
+        serpType: Array.isArray(serp) ? 'array' : typeof serp
+    };
+
+    if (serp && typeof serp === 'object') {
+        summary.serpKeys = Object.keys(serp).slice(0, 40);
+        const searchResults = serp.sections || serp.results || serp.items || null;
+        if (Array.isArray(searchResults)) {
+            summary.serpListLength = searchResults.length;
+        }
+    }
+
+    return summary;
+}
+
+function rememberInstagramTaskPacketSample(packet) {
+    if (!packet || typeof packet !== 'object') return;
+
+    const bucket = Array.isArray(window.__creatorScanInstagramTaskPacketSamples)
+        ? window.__creatorScanInstagramTaskPacketSamples
+        : [];
+
+    if (bucket.length < INSTAGRAM_TASK_PACKET_SAMPLE_LIMIT) {
+        bucket.push(packet);
+    } else {
+        bucket[bucket.length - 1] = packet;
+    }
+
+    window.__creatorScanInstagramTaskPacketSamples = bucket;
+    taskInstagramPacketSamples = bucket;
+
+    try {
+        const summaries = bucket.map(summarizeInstagramTaskPacket);
+        sessionStorage.setItem(INSTAGRAM_TASK_SAMPLE_SUMMARIES_SESSION_KEY, JSON.stringify(summaries));
+    } catch (e) {
+        console.warn('CreatorScan: Failed to persist Instagram packet summaries', e);
+    }
+}
+
+function parseInstagramTaskRequestParams(packet) {
+    const request = packet?.request || {};
+    const params = {};
+
+    const query = request.query;
+    if (query && typeof query === 'object' && !Array.isArray(query)) {
+        Object.entries(query).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) params[key] = value;
+        });
+    }
+
+    const body = request.body;
+    if (typeof body === 'string' && body) {
+        const trimmed = body.replace(/\.\.\.\[truncated\]$/, '');
+        try {
+            const search = new URLSearchParams(trimmed);
+            for (const [key, value] of search.entries()) {
+                if (value !== undefined && value !== null) params[key] = value;
+            }
+        } catch (e) {
+            // ignore malformed/truncated body
+        }
+    } else if (body && typeof body === 'object' && !Array.isArray(body)) {
+        Object.entries(body).forEach(([key, value]) => {
+            if (value !== undefined && value !== null) {
+                params[key] = typeof value === 'string' ? value : String(value);
+            }
+        });
+    }
+
+    return params;
+}
+
+function parseInstagramTaskVariables(packet) {
+    const params = parseInstagramTaskRequestParams(packet);
+    const raw = params.variables;
+    if (!raw || typeof raw !== 'string') return null;
+    try {
+        return JSON.parse(raw);
+    } catch (e) {
+        try {
+            return JSON.parse(decodeURIComponent(raw));
+        } catch (e2) {
+            return null;
+        }
+    }
+}
+
+function getInstagramPacketFriendlyName(packet) {
+    const params = parseInstagramTaskRequestParams(packet);
+    const value = params.fb_api_req_friendly_name;
+    return value ? String(value) : '';
+}
+
+function getInstagramProfileHydrationUser(packet) {
+    const user = packet?.response?.data?.user;
+    if (!user || typeof user !== 'object') return null;
+    if (!user.username) return null;
+    return user;
+}
+
+function normalizeInstagramHydrationExternalLink(raw) {
+    if (!raw) return null;
+    let value = String(raw).trim();
+    if (!value) return null;
+    value = value.replace(/&amp;/g, '&');
+
+    try {
+        const parsed = new URL(value, window.location.origin);
+        if (parsed.hostname.includes('l.instagram.com')) {
+            const target = parsed.searchParams.get('u');
+            if (target) {
+                try {
+                    value = decodeURIComponent(target);
+                } catch (e) {
+                    value = target;
+                }
+            }
+        }
+    } catch (e) {
+        return null;
+    }
+
+    let finalUrl;
+    try {
+        finalUrl = new URL(value);
+    } catch (e) {
+        return null;
+    }
+
+    const host = finalUrl.hostname.toLowerCase();
+    if (!/^https?:$/i.test(finalUrl.protocol)) return null;
+    if (host.includes('instagram.com') || host.endsWith('threads.net')) return null;
+
+    finalUrl.hash = '';
+    return finalUrl.toString();
+}
+
+function extractInstagramHydrationShareLinks(user) {
+    const out = [];
+    const seen = new Set();
+    const push = (raw) => {
+        const url = normalizeInstagramHydrationExternalLink(raw);
+        if (!url) return;
+        const key = url.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(url);
+    };
+
+    push(user?.external_url);
+    push(user?.external_lynx_url);
+    if (Array.isArray(user?.bio_links)) {
+        user.bio_links.forEach((link) => {
+            if (!link) return;
+            if (typeof link === 'string') {
+                push(link);
+                return;
+            }
+            push(link.url);
+            push(link.link_url);
+            push(link.lynx_url);
+            push(link.href);
+        });
+    }
+
+    return out;
+}
+
+function buildInstagramTaskHydrationPatchFromUser(user, sessionSeed, sourceTag = 'instagram_profile_graphql') {
+    if (!user || typeof user !== 'object') return null;
+
+    const packetUsername = String(user.username || '').trim();
+    const seedUsername = String(sessionSeed?.uniqueId || '').trim();
+    if (seedUsername && packetUsername && seedUsername.toLowerCase() !== packetUsername.toLowerCase()) {
+        return null;
+    }
+
+    const packetAuthorId = String(user.id || user.pk || '').trim();
+    const seedAuthorId = String(sessionSeed?.authorId || sessionSeed?.id || '').trim();
+    if (seedAuthorId && packetAuthorId && seedAuthorId !== packetAuthorId) {
+        return null;
+    }
+
+    const patch = {};
+    const profileUrl = `https://www.instagram.com/${encodeURIComponent(packetUsername || seedUsername)}/`;
+
+    patch.platform = 'Instagram';
+    patch.url = profileUrl;
+    patch.profileUrl = profileUrl;
+    if (packetUsername) patch.uniqueId = packetUsername;
+    if (packetAuthorId) patch.authorId = packetAuthorId;
+    if (user.pk) patch.igUserPk = String(user.pk);
+
+    if (user.full_name !== undefined) patch.nickname = String(user.full_name || '').trim();
+    const avatarUrl = user?.hd_profile_pic_url_info?.url || user.profile_pic_url;
+    if (avatarUrl) patch.avatar = avatarUrl;
+
+    if (user.follower_count !== undefined && user.follower_count !== null) {
+        patch.followerCount = String(user.follower_count);
+    }
+    if (user.following_count !== undefined && user.following_count !== null) {
+        patch.followingCount = String(user.following_count);
+    }
+    if (user.media_count !== undefined && user.media_count !== null) {
+        patch.postCount = String(user.media_count);
+    }
+    if (user.total_clips_count !== undefined && user.total_clips_count !== null) {
+        patch.reelCount = String(user.total_clips_count);
+    }
+
+    if (user.biography !== undefined) patch.signature = String(user.biography || '');
+    if (user.category_name) patch.categoryName = String(user.category_name);
+    else if (user.category) patch.categoryName = String(user.category);
+    if (user.city_name) patch.cityName = String(user.city_name);
+    if (user.city_name) patch.location = String(user.city_name);
+
+    if (user.is_verified !== undefined) {
+        patch.verified = !!user.is_verified;
+        patch.isVerified = !!user.is_verified;
+    }
+    if (user.is_private !== undefined) patch.isPrivate = !!user.is_private;
+    if (user.is_business !== undefined) patch.isBusiness = !!user.is_business;
+    if (user.is_professional_account !== undefined) patch.isProfessionalAccount = !!user.is_professional_account;
+
+    const shareLinks = extractInstagramHydrationShareLinks(user);
+    if (shareLinks.length > 0) patch.shareLinks = shareLinks;
+
+    const publicEmail = user.public_email ? String(user.public_email).trim() : '';
+    const bioEmail = extractEmail(String(user.biography || ''));
+    const email = publicEmail || bioEmail;
+    if (email) {
+        patch.email = email;
+        patch.emailSourceUrl = profileUrl;
+    }
+
+    patch.taskHydrationStatus = 'success';
+    patch.taskHydratedAt = Date.now();
+    patch.taskHydrationError = null;
+    patch.taskHydrationSource = sourceTag;
+
+    return patch;
+}
+
+function buildInstagramTaskHydrationPatchFromPacket(packet, sessionSeed) {
+    const user = getInstagramProfileHydrationUser(packet);
+    if (!user) return null;
+
+    const friendlyName = getInstagramPacketFriendlyName(packet);
+    if (friendlyName && friendlyName !== 'PolarisProfilePageContentQuery') {
+        return null;
+    }
+
+    return buildInstagramTaskHydrationPatchFromUser(user, sessionSeed, 'instagram_profile_graphql');
+}
+
+function extractInstagramUserFromWebProfileInfoResponse(data) {
+    if (!data || typeof data !== 'object') return null;
+    if (data.user && typeof data.user === 'object' && data.user.username) return data.user;
+    if (data.data && typeof data.data === 'object') {
+        if (data.data.user && typeof data.data.user === 'object' && data.data.user.username) return data.data.user;
+        if (data.data.user_data && typeof data.data.user_data === 'object' && data.data.user_data.username) return data.data.user_data;
+    }
+    const nested = findNestedValueByKey(data, 'user');
+    if (nested && typeof nested === 'object' && nested.username) return nested;
+    return null;
+}
+
+async function fetchInstagramWebProfileInfoHydrationPatch(sessionSeed) {
+    const username = String(sessionSeed?.uniqueId || '').trim();
+    if (!username) return null;
+
+    const url = `/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
+    const response = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+            'accept': 'application/json, text/plain, */*',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const user = extractInstagramUserFromWebProfileInfoResponse(data);
+    return buildInstagramTaskHydrationPatchFromUser(user, sessionSeed, 'instagram_web_profile_info_api');
+}
+
+function buildInstagramTaskHydrationPatchFromDom(sessionSeed, data) {
+    if (!data || typeof data !== 'object') return null;
+
+    const patch = {};
+    const username = String(sessionSeed?.uniqueId || '').trim();
+    const profileUrl = data.url || sessionSeed?.profileUrl || (username ? `https://www.instagram.com/${encodeURIComponent(username)}/` : null);
+
+    patch.platform = 'Instagram';
+    if (profileUrl) {
+        patch.url = profileUrl;
+        patch.profileUrl = profileUrl;
+    }
+    if (username) patch.uniqueId = username;
+    if (sessionSeed?.authorId) patch.authorId = String(sessionSeed.authorId);
+    if (sessionSeed?.igUserPk) patch.igUserPk = String(sessionSeed.igUserPk);
+
+    if (data.followers !== undefined && data.followers !== null && String(data.followers).trim()) {
+        patch.followerCount = String(data.followers).trim();
+    }
+    if (data.email) {
+        patch.email = String(data.email).trim();
+        if (profileUrl) patch.emailSourceUrl = profileUrl;
+    }
+    if (Array.isArray(data.shareLinks) && data.shareLinks.length > 0) {
+        patch.shareLinks = data.shareLinks.filter(Boolean).map((v) => String(v));
+    }
+
+    const useful =
+        !!patch.followerCount ||
+        !!patch.email ||
+        (Array.isArray(patch.shareLinks) && patch.shareLinks.length > 0);
+    if (!useful) return null;
+
+    patch.taskHydrationStatus = 'success';
+    patch.taskHydratedAt = Date.now();
+    patch.taskHydrationError = null;
+    patch.taskHydrationSource = 'instagram_profile_dom_fallback';
+
+    return patch;
+}
+
+function sendInstagramTaskHydrationResultToBackground(seed, result) {
+    const targetSeed = seed && typeof seed === 'object' ? seed : {};
+    const payload = {
+        action: 'instagramTaskHydrationResult',
+        id: targetSeed.id,
+        uniqueId: targetSeed.uniqueId,
+        authorId: targetSeed.authorId,
+        ...result
+    };
+
+    chrome.runtime.sendMessage(payload, (response) => {
+        if (chrome.runtime.lastError) {
+            console.error('CreatorScan: instagramTaskHydrationResult send error', chrome.runtime.lastError, payload);
+        } else {
+            console.log('CreatorScan: instagramTaskHydrationResult sent', payload, response);
+        }
+    });
+}
+
+function finishInstagramTaskHydrationSession(result) {
+    const session = instagramTaskHydrationSession;
+    if (!session?.active) return;
+    const seed = session.seed || {};
+    clearInstagramTaskHydrationSessionState();
+    sendInstagramTaskHydrationResultToBackground(seed, result);
+}
+
+function tryProcessBufferedInstagramTaskHydrationPackets() {
+    if (!instagramTaskHydrationSession?.active) return false;
+    const packets = instagramTaskHydrationRecentPackets.slice().reverse();
+    for (const packet of packets) {
+        const patch = buildInstagramTaskHydrationPatchFromPacket(packet, instagramTaskHydrationSession.seed);
+        if (patch) {
+            finishInstagramTaskHydrationSession({
+                success: true,
+                source: 'graphql-buffer',
+                patch
+            });
+            return true;
+        }
+    }
+    return false;
+}
+
+async function handleInstagramTaskHydrationGraphqlPacket(packet) {
+    if (!instagramTaskHydrationSession?.active) return false;
+    const patch = buildInstagramTaskHydrationPatchFromPacket(packet, instagramTaskHydrationSession.seed);
+    if (!patch) return false;
+
+    finishInstagramTaskHydrationSession({
+        success: true,
+        source: 'graphql-live',
+        patch
+    });
+    return true;
+}
+
+async function handleInstagramTaskHydrationNoPacketTimeout() {
+    if (!instagramTaskHydrationSession?.active) return;
+
+    const session = instagramTaskHydrationSession;
+    if (!session.reloadAttempted) {
+        session.reloadAttempted = true;
+        persistInstagramTaskHydrationSession();
+        console.warn('CreatorScan: Instagram hydration packet wait timeout, reloading once', {
+            uniqueId: session.seed?.uniqueId,
+            url: window.location.href
+        });
+        window.location.reload();
+        return;
+    }
+
+    if (!session.fallbackAttempted) {
+        session.fallbackAttempted = true;
+        persistInstagramTaskHydrationSession();
+        try {
+            const apiPatch = await fetchInstagramWebProfileInfoHydrationPatch(session.seed);
+            if (apiPatch) {
+                finishInstagramTaskHydrationSession({
+                    success: true,
+                    source: 'web-profile-info-api',
+                    patch: apiPatch
+                });
+                return;
+            }
+        } catch (e) {
+            console.warn('CreatorScan: Instagram web_profile_info fallback failed', e);
+        }
+        try {
+            const domData = await scrapeInstagram();
+            const patch = buildInstagramTaskHydrationPatchFromDom(session.seed, domData);
+            if (patch) {
+                finishInstagramTaskHydrationSession({
+                    success: true,
+                    source: 'dom-fallback',
+                    patch
+                });
+                return;
+            }
+        } catch (e) {
+            console.warn('CreatorScan: Instagram hydration DOM fallback failed', e);
+        }
+    }
+
+    finishInstagramTaskHydrationSession({
+        success: false,
+        source: 'timeout',
+        error: 'Instagram profile hydration packet not captured'
+    });
+}
+
+function extractInstagramTaskKeyword(packet) {
+    const variables = parseInstagramTaskVariables(packet);
+    const fromVariables = typeof variables?.query === 'string' ? variables.query.trim() : '';
+    if (fromVariables) return fromVariables;
+    const fromTask = typeof taskConfig?.keyword === 'string' ? taskConfig.keyword.trim() : '';
+    return fromTask || '';
+}
+
+function extractInstagramTaskSeedProfiles(packet) {
+    const serp = findNestedValueByKey(packet?.response, 'xdt_fbsearch__top_serp_graphql');
+    if (!serp || typeof serp !== 'object') return [];
+
+    const keyword = extractInstagramTaskKeyword(packet);
+    const seen = new Set();
+    const profiles = [];
+    const now = Date.now();
+    const edges = Array.isArray(serp.edges) ? serp.edges : [];
+
+    edges.forEach((edge) => {
+        const node = edge?.node;
+        const items = Array.isArray(node?.items) ? node.items : [];
+        items.forEach((item) => {
+            const user = item?.user;
+            if (!user || typeof user !== 'object') return;
+
+            const username = String(user.username || '').trim();
+            if (!username) return;
+
+            const authorId = String(user.id || user.pk || '').trim();
+            const igUserPk = String(user.pk || '').trim();
+            const profileUrl = `https://www.instagram.com/${encodeURIComponent(username)}/`;
+            const seedKey = authorId || username.toLowerCase();
+            if (!seedKey || seen.has(seedKey)) return;
+            seen.add(seedKey);
+
+            profiles.push({
+                id: authorId || profileUrl,
+                platform: 'Instagram',
+                uniqueId: username,
+                authorId: authorId || undefined,
+                igUserPk: igUserPk || undefined,
+                url: profileUrl,
+                profileUrl: profileUrl,
+                timestamp: now,
+                sourceKeyword: keyword || undefined,
+                matchedKeywords: keyword ? [keyword] : [],
+                firstSeenAt: now,
+                lastSeenAt: now,
+                taskSeedType: 'instagram_keyword_user',
+                taskHydrationStatus: 'pending'
+            });
+        });
+    });
+
+    return profiles;
+}
+
+async function handleInstagramTaskGraphqlPacket(packet) {
+    if (!packet || typeof packet !== 'object') return;
+
+    lastApiResponseTime = Date.now();
+    taskInterceptCount++;
+
+    if (taskConfig) {
+        taskConfig.initialPageCount = taskInterceptCount;
+        sessionStorage.setItem('creatorScanTaskConfig', JSON.stringify(taskConfig));
+    }
+
+    rememberInstagramTaskPacketSample(packet);
+
+    const summary = summarizeInstagramTaskPacket(packet);
+    console.log(`CreatorScan: Instagram task packet ${taskInterceptCount}/${taskConfig?.pageLimit}`, summary);
+
+    try {
+        const extracted = extractInstagramTaskSeedProfiles(packet);
+        const newProfiles = extracted.filter((profile) => {
+            if (!profile || profile.id === undefined || profile.id === null) return false;
+            const key = String(profile.id);
+            if (taskSeenProfileIds.has(key)) return false;
+            taskSeenProfileIds.add(key);
+            return true;
+        });
+
+        if (newProfiles.length > 0 && taskConfig?.taskId && taskConfig?.keyword) {
+            chrome.runtime.sendMessage({
+                action: 'saveTaskProfiles',
+                taskId: taskConfig.taskId,
+                keyword: taskConfig.keyword,
+                data: newProfiles
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.error('CreatorScan: Instagram saveTaskProfiles error', chrome.runtime.lastError);
+                } else {
+                    console.log(`CreatorScan: Instagram saved ${newProfiles.length} new seed profiles`, response);
+                }
+            });
+        }
+    } catch (e) {
+        console.error('CreatorScan: Failed to extract/save Instagram task profiles', e);
+    }
+
+    try {
+        chrome.runtime.sendMessage({
+            action: 'updateTaskProgress',
+            taskId: taskConfig.taskId,
+            keyword: taskConfig.keyword,
+            pageCount: taskInterceptCount
+        }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('CreatorScan: Instagram updateTaskProgress error', chrome.runtime.lastError);
+            } else {
+                console.log('CreatorScan: Instagram updateTaskProgress sent', response);
+            }
+        });
+    } catch (e) {
+        console.error('CreatorScan: Failed to send Instagram updateTaskProgress', e);
+    }
+
+    if (taskConfig?.pageLimit && taskInterceptCount >= taskConfig.pageLimit) {
+        requestTaskKeywordComplete('page_limit_instagram_packet');
+    }
+}
 
 async function batchLoopStep() {
     const { isBatchScraping, batchTargetCount, batchSessionCount } = await chrome.storage.local.get(['isBatchScraping', 'batchTargetCount', 'batchSessionCount']);
@@ -849,9 +1851,8 @@ async function batchLoopStep() {
         return;
     }
     
-    // Scroll to bottom to trigger next page
-    // Use smooth scrolling for more human-like behavior
-    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    // Scroll to trigger next page
+    triggerTikTokTaskScroll();
 }
 
 async function handleTikTokApiResponse(data, mode = 'legacy') {
@@ -943,22 +1944,42 @@ async function handleTikTokApiResponse(data, mode = 'legacy') {
             if (author && stats) {
                 const followerCountRaw = stats.followerCount;
                 const followerCount = parseInt(followerCountRaw);
+                const videoId = item.id || item.aweme_id || item.awemeId;
                 
                 // Check if valid number and within range
                 if (!isNaN(followerCount)) {
                      if (followerCount >= minFollowers && followerCount <= maxFollowers) {
-                        validProfiles.push({
-                            id: author.id,
-                            secUid: author.secUid,
-                            signature: author.signature,
-                            followerCount: followerCountRaw, // Keep original string as requested
-                            // Extra fields for UI display
-                            uniqueId: author.uniqueId,
-                            nickname: author.nickname,
-                            avatar: author.avatarThumb,
-                            platform: 'TikTok',
-                            timestamp: Date.now()
-                        });
+                        if (mode === 'task') {
+                            if (!author.id || !author.uniqueId || !videoId) {
+                                return;
+                            }
+                            // Task mode now stores a minimal seed first.
+                            // Background service worker will fetch video/profile pages and hydrate details.
+                            validProfiles.push({
+                                id: author.id, // keep author-level dedupe behavior in current storage/UI
+                                authorId: author.id,
+                                userId: author.uniqueId, // handle used in /@{id}
+                                uniqueId: author.uniqueId,
+                                videoId: videoId,
+                                secUid: author.secUid,
+                                platform: 'TikTok',
+                                timestamp: Date.now(),
+                                taskSeedType: 'tiktok_video_author_pair'
+                            });
+                        } else {
+                            validProfiles.push({
+                                id: author.id,
+                                secUid: author.secUid,
+                                signature: author.signature,
+                                followerCount: followerCountRaw, // Keep original string as requested
+                                // Extra fields for UI display
+                                uniqueId: author.uniqueId,
+                                nickname: author.nickname,
+                                avatar: author.avatarThumb,
+                                platform: 'TikTok',
+                                timestamp: Date.now()
+                            });
+                        }
                      } else {
                          // console.log(`CreatorScan: Skipping ${author.uniqueId}, followers ${followerCount} not in range`);
                      }
@@ -989,5 +2010,9 @@ async function handleTikTokApiResponse(data, mode = 'legacy') {
                 data: validProfiles
             });
         }
+    }
+
+    if (mode === 'task' && taskConfig?.pageLimit && taskInterceptCount >= taskConfig.pageLimit) {
+        requestTaskKeywordComplete('page_limit_tiktok_packet');
     }
 }

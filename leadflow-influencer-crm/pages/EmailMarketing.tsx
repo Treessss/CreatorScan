@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { smtpService, emailService, templateService, creatorService } from '../services/api';
+import { smtpService, emailService, templateService, creatorService, toApiAssetUrl } from '../services/api';
 import { SmtpConfig, EmailTemplate, EmailLog, Influencer } from '../types';
 import { useFeedback } from '../components/FeedbackProvider';
 import CustomSelect from '../components/CustomSelect';
@@ -597,7 +597,10 @@ const EmailMarketing: React.FC = () => {
                                         {selectedCreatorIds.includes(Number(creator.id)) && <span className="material-symbols-outlined text-[14px]">check</span>}
                                     </div>
                                     <div className="size-8 rounded-full bg-slate-200 mr-3 overflow-hidden">
-                                        {creator.avatar ? <img src={creator.avatar} className="w-full h-full object-cover" /> : null}
+                                        {(() => {
+                                            const avatar = toApiAssetUrl((creator as any)?.avatar || (creator as any)?.data?.avatar || (creator as any)?.data?.avatar_url || (creator as any)?.data?.avatarurl);
+                                            return avatar ? <img src={avatar} className="w-full h-full object-cover" /> : null;
+                                        })()}
                                     </div>
                                     <div className="flex-1">
                                         <p className="text-sm font-bold text-slate-900 dark:text-white">{creator.name}</p>

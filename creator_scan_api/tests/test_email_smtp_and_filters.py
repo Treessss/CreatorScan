@@ -115,6 +115,27 @@ def test_email_send_queues_with_multiple_owned_smtp_configs(client, monkeypatch)
     assert captured["args"][5] == [cfg_1["id"], cfg_2["id"]]
 
 
+def test_smtp_update_keeps_existing_password_when_blank(client):
+    _register(client, "smtp_edit_user", "secret123")
+    token = _login(client, "smtp_edit_user", "secret123")
+
+    created = _create_smtp(client, token, "edit@example.com", is_default=True)
+    assert created["password"] == "pw"
+
+    updated = client.put(
+        f"/emails/smtp/{created['id']}",
+        json={
+            "sender_name": "Renamed Sender",
+            "password": "",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["sender_name"] == "Renamed Sender"
+    assert body["password"] == "pw"
+
+
 def test_email_logs_filters_and_pagination(client, db_session):
     user = _register(client, "log_filter_user", "secret123")
     token = _login(client, "log_filter_user", "secret123")
@@ -203,17 +224,17 @@ def test_creator_filters_sharelink_and_followers(client):
             {
                 "platform": "TikTok",
                 "unique_id": "f1",
-                "data": {"nickname": "NoLink", "followerCount": "500"},
+                "data": {"nickname": "NoLink", "followerCount": "500", "locationCreated": "US"},
             },
             {
                 "platform": "TikTok",
                 "unique_id": "f2",
-                "data": {"nickname": "WithLink", "followerCount": "1.2K", "shareLinks": ["https://x.com/a"]},
+                "data": {"nickname": "WithLink", "followerCount": "1.2K", "shareLinks": ["https://x.com/a"], "locationCreated": "SG"},
             },
             {
                 "platform": "TikTok",
                 "unique_id": "f3",
-                "data": {"nickname": "Big", "followerCount": "2M"},
+                "data": {"nickname": "Big", "followerCount": "2M", "country": "JP"},
             },
         ],
     )
@@ -237,6 +258,16 @@ def test_creator_filters_sharelink_and_followers(client):
     follower_body = follower_range.json()
     assert follower_body["total"] == 1
     assert follower_body["items"][0]["unique_id"] == "f2"
+
+    location_filter = client.get(
+        "/creators/",
+        params={"location": "SG|新加坡|Singapore"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert location_filter.status_code == 200
+    location_body = location_filter.json()
+    assert location_body["total"] == 1
+    assert location_body["items"][0]["unique_id"] == "f2"
 
 
 def test_2fa_disable_requires_password_and_code(client):

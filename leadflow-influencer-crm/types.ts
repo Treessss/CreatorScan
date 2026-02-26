@@ -19,6 +19,7 @@ export interface Influencer {
     location: string;
     email: string;
     shareLink?: string;
+    tags?: string[];
     status: 'synced' | 'pending' | 'sent' | 'replied' | 'none';
     time?: string;
 }

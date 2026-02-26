@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, cast, String
 from app.domains.creator.models import Creator
 from app.domains.creator import schemas
+import re
 
 def get_creator_by_platform_uid(db: Session, owner_id: int, platform: str, unique_id: str):
     return db.query(Creator).filter(
@@ -61,8 +62,62 @@ def parse_follower_count(value):
     except:
         return 0
 
-def get_creators_by_owner_ids(db: Session, owner_ids: list[int], skip: int = 0, limit: int = 100, search: str = None, has_email: bool = None, platform: str = None, has_sharelink: bool = None, min_followers: int = None, max_followers: int = None):
+def _build_location_filter_terms(location: str):
+    raw = str(location or "").strip()
+    if not raw:
+        return []
+
+    # Frontend country dropdown sends "CODE|中文名|English Name".
+    parts = [p.strip() for p in raw.split("|") if p and p.strip()]
+    candidates = parts if parts else [raw]
+
+    terms = []
+    seen = set()
+    for item in candidates:
+        lower = item.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        terms.append(item)
+    return terms
+
+def _location_matches_terms(item_location, terms):
+    text = str(item_location or "").strip()
+    if not text:
+        return False
+
+    normalized = text.lower()
+    tokens = set(re.findall(r"[a-z0-9]+", normalized))
+
+    for term in terms:
+        probe = str(term).strip().lower()
+        if not probe:
+            continue
+        # For ISO-like short codes, use token/exact matching to avoid false positives
+        # like "US" matching "Russia".
+        if re.fullmatch(r"[a-z]{2,3}", probe):
+            if normalized == probe or probe in tokens:
+                return True
+            continue
+        if probe in normalized:
+            return True
+    return False
+
+def get_creators_by_owner_ids(
+    db: Session,
+    owner_ids: list[int],
+    skip: int = 0,
+    limit: int = 100,
+    search: str = None,
+    has_email: bool = None,
+    platform: str = None,
+    location: str = None,
+    has_sharelink: bool = None,
+    min_followers: int = None,
+    max_followers: int = None,
+):
     query = db.query(Creator).filter(Creator.owner_id.in_(owner_ids))
+    location_terms = _build_location_filter_terms(location)
 
     if platform:
         query = query.filter(Creator.platform == platform)
@@ -84,7 +139,12 @@ def get_creators_by_owner_ids(db: Session, owner_ids: list[int], skip: int = 0, 
             query = query.filter(~cast(Creator.data, String).ilike('%"email": "%'))
 
     # If we need python-side filtering
-    needs_python_filtering = (has_sharelink is not None) or (min_followers is not None) or (max_followers is not None)
+    needs_python_filtering = (
+        (location is not None and str(location).strip() != "")
+        or (has_sharelink is not None)
+        or (min_followers is not None)
+        or (max_followers is not None)
+    )
 
     if not needs_python_filtering:
         total = query.count()
@@ -98,6 +158,17 @@ def get_creators_by_owner_ids(db: Session, owner_ids: list[int], skip: int = 0, 
     
     for item in candidates:
         data = item.data or {}
+
+        if location is not None and str(location).strip() != "":
+            item_location = (
+                data.get("location")
+                or data.get("locationCreated")
+                or data.get("region")
+                or data.get("country")
+                or ""
+            )
+            if not _location_matches_terms(item_location, location_terms):
+                continue
         
         # ShareLink Filter
         if has_sharelink is not None:

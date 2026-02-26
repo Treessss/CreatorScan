@@ -5,7 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { dashboardService } from '../services/api';
+import { dashboardService, toApiAssetUrl } from '../services/api';
 
 const StatCard: React.FC<{
   label: string;
@@ -117,7 +117,7 @@ const Dashboard: React.FC = () => {
             ) : (
                 stats.recent_activity.map((activity: any) => (
                 <div key={activity.id} className="flex gap-3">
-                    <div className="size-8 rounded-full bg-slate-200 shrink-0" style={{ backgroundImage: `url('${activity.avatar}')`, backgroundSize: 'cover' }}></div>
+                    <div className="size-8 rounded-full bg-slate-200 shrink-0" style={{ backgroundImage: `url('${toApiAssetUrl(activity.avatar)}')`, backgroundSize: 'cover' }}></div>
                     <div>
                     <p className="text-sm font-semibold text-slate-900 dark:text-white leading-tight">{activity.name}</p>
                     <p className="text-xs text-slate-500 mt-0.5">{activity.description}</p>

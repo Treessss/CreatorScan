@@ -1,0 +1,43 @@
+- generic [active] [ref=e1]:
+  - img
+  - generic [ref=e3]:
+    - generic [ref=e36]:
+      - article [ref=e38]:
+        - button "全屏观看" [ref=e40] [cursor=pointer]:
+          - 'img "2026 is the new 2016? ⏳ Nah, it still feels like 1996 for ME3 Santhi and ME3 Ganisen, who met 30 years ago at their Basic Air Operations Specialist Course ❤️ #fyp #miltok #ValentinesDay" [ref=e45]'
+      - complementary
+    - generic [ref=e68]:
+      - button [ref=e71] [cursor=pointer]:
+        - img [ref=e73]
+      - button [ref=e78] [cursor=pointer]:
+        - img [ref=e80]
+      - button "登录" [ref=e85] [cursor=pointer]:
+        - generic [ref=e87]: 登录
+    - generic [ref=e89]:
+      - img [ref=e91] [cursor=pointer]
+      - generic [ref=e93]: 键盘快捷键介绍！
+      - generic [ref=e94]:
+        - generic [ref=e95]:
+          - text: 观看上一个视频
+          - img [ref=e96]
+        - generic [ref=e99]:
+          - text: 观看下一个视频
+          - img [ref=e100]
+        - generic [ref=e103]:
+          - text: 为视频点赞
+          - img [ref=e104]
+        - generic [ref=e107]:
+          - text: 将视频静音/取消静音
+          - img [ref=e108]
+        - generic [ref=e111]:
+          - text: 播放/暂停
+          - img [ref=e112]
+        - generic [ref=e115]:
+          - text: 快进
+          - img [ref=e116]
+        - generic [ref=e119]:
+          - text: 快退
+          - img [ref=e120]
+        - generic [ref=e123]:
+          - text: 全屏
+          - img [ref=e124]

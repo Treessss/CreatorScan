@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Influencer } from '../types';
-import { creatorService } from '../services/api';
+import { creatorService, toApiAssetUrl } from '../services/api';
 import ConfirmModal from '../components/ConfirmModal';
 import { useFeedback } from '../components/FeedbackProvider';
 import CustomSelect from '../components/CustomSelect';
+import { COUNTRY_OPTIONS_ZH } from '../constants/countryOptions';
 
 const InfluencerList: React.FC = () => {
   const { notify } = useFeedback();
@@ -18,6 +19,8 @@ const InfluencerList: React.FC = () => {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [hasEmail, setHasEmail] = useState<string>('all');
   const [hasShareLink, setHasShareLink] = useState<string>('all');
+  const [locationFilter, setLocationFilter] = useState('');
+  const [debouncedLocationFilter, setDebouncedLocationFilter] = useState('');
   
   const [minFollowers, setMinFollowers] = useState<string>('');
   const [maxFollowers, setMaxFollowers] = useState<string>('');
@@ -38,6 +41,23 @@ const InfluencerList: React.FC = () => {
 
   const [uploading, setUploading] = useState(false);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [selectingAllPages, setSelectingAllPages] = useState(false);
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+  const [tagSaving, setTagSaving] = useState(false);
+
+  const normalizeTags = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+      return value.map((v) => String(v).trim()).filter(Boolean);
+    }
+    if (typeof value === 'string') {
+      return value
+        .split(/[\n,，;；]+/)
+        .map((v) => v.trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
 
   const getContactStatus = (item: any): Influencer['status'] => {
     if (item.has_replied) return 'replied';
@@ -61,53 +81,60 @@ const InfluencerList: React.FC = () => {
     return () => clearTimeout(t);
   }, [minFollowers, maxFollowers]);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedLocationFilter(locationFilter.trim()), 350);
+    return () => clearTimeout(t);
+  }, [locationFilter]);
+
   // Reset page when filters change
   useEffect(() => {
     setPage(1);
-  }, [platform, debouncedSearch, hasEmail, hasShareLink, debouncedMinFollowers, debouncedMaxFollowers, pageSize]);
+  }, [platform, debouncedSearch, hasEmail, hasShareLink, debouncedLocationFilter, debouncedMinFollowers, debouncedMaxFollowers, pageSize]);
 
   useEffect(() => {
     fetchInfluencers();
-  }, [platform, debouncedSearch, hasEmail, hasShareLink, debouncedMinFollowers, debouncedMaxFollowers, page, pageSize]);
+  }, [platform, debouncedSearch, hasEmail, hasShareLink, debouncedLocationFilter, debouncedMinFollowers, debouncedMaxFollowers, page, pageSize]);
 
-  // Reset selection when list reloads
+  // Reset selection when query scope changes (keep selection when only paging).
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [influencers]);
+  }, [platform, debouncedSearch, hasEmail, hasShareLink, debouncedLocationFilter, debouncedMinFollowers, debouncedMaxFollowers, pageSize]);
+
+  const buildCurrentListQuery = (skip: number, limit: number) => {
+    const emailFilter = hasEmail === 'all' ? undefined : (hasEmail === 'yes');
+    const shareLinkFilter = hasShareLink === 'all' ? undefined : (hasShareLink === 'yes');
+    const minF = debouncedMinFollowers ? parseInt(debouncedMinFollowers) : undefined;
+    const maxF = debouncedMaxFollowers ? parseInt(debouncedMaxFollowers) : undefined;
+    const location = debouncedLocationFilter || undefined;
+    return [skip, limit, debouncedSearch, emailFilter, platform, shareLinkFilter, minF, maxF, location] as const;
+  };
 
   const fetchInfluencers = async () => {
     setLoading(true);
     try {
-      const emailFilter = hasEmail === 'all' ? undefined : (hasEmail === 'yes');
-      const shareLinkFilter = hasShareLink === 'all' ? undefined : (hasShareLink === 'yes');
-      const minF = debouncedMinFollowers ? parseInt(debouncedMinFollowers) : undefined;
-      const maxF = debouncedMaxFollowers ? parseInt(debouncedMaxFollowers) : undefined;
-
-      const data = await creatorService.getAll(
-        (page - 1) * pageSize,
-        pageSize,
-        debouncedSearch,
-        emailFilter,
-        platform,
-        shareLinkFilter,
-        minF,
-        maxF
-      );
+      const data = await creatorService.getAll(...buildCurrentListQuery((page - 1) * pageSize, pageSize));
       
       setTotal(data.total);
       
-      const transformed = data.items.map((item: any) => ({
-        id: item.id.toString(),
-        name: item.data?.nickname || item.unique_id,
-        handle: `@${item.unique_id}`,
-        avatar: item.data?.avatar || item.data?.avatar_url || item.data?.avatarurl || 'https://picsum.photos/100/100',
-        platform: item.platform,
-        followers: item.data?.followerCount || '-',
-        location: '未知', // Backend doesn't have location yet
-        email: item.data?.email || '',
-        shareLink: item.data?.ShareLinks || item.data?.shareLinks || item.data?.shareLink || item.data?.ShareLink || item.data?.share_link || '',
-        status: getContactStatus(item)
-      }));
+      const transformed = data.items.map((item: any) => {
+        const raw = item.data || {};
+        const shareLinkRaw = raw.ShareLinks || raw.shareLinks || raw.shareLink || raw.ShareLink || raw.share_link || '';
+        const tags = normalizeTags(raw.tags || raw.Tags || raw.labels || raw.label);
+        return {
+          id: item.id.toString(),
+          name: raw.nickname || item.unique_id,
+          handle: `@${item.unique_id}`,
+          avatar: toApiAssetUrl(raw.avatar || raw.avatar_url || raw.avatarurl) || 'https://picsum.photos/100/100',
+          platform: item.platform,
+          followers: raw.followerCount || raw.followers || '-',
+          // Support extension/Excel/backend aliases and keep UI resilient to older rows.
+          location: raw.location || raw.locationCreated || raw.region || raw.country || '未知',
+          email: raw.email || '',
+          shareLink: Array.isArray(shareLinkRaw) ? String(shareLinkRaw[0] || '') : String(shareLinkRaw || ''),
+          tags,
+          status: getContactStatus(item)
+        };
+      });
       
       setInfluencers(transformed);
     } catch (err) {
@@ -118,11 +145,14 @@ const InfluencerList: React.FC = () => {
   };
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const pageIds = influencers.map(i => i.id);
+    const next = new Set(selectedIds);
     if (e.target.checked) {
-      setSelectedIds(new Set(influencers.map(i => i.id)));
+      pageIds.forEach(id => next.add(id));
     } else {
-      setSelectedIds(new Set());
+      pageIds.forEach(id => next.delete(id));
     }
+    setSelectedIds(next);
   };
 
   const handleSelectOne = (id: string, checked: boolean) => {
@@ -199,11 +229,67 @@ const InfluencerList: React.FC = () => {
     setModalOpen(true);
   };
 
+  const handleSelectAllAcrossPages = async () => {
+    if (selectingAllPages) return;
+    setSelectingAllPages(true);
+    try {
+      const batchSize = 500;
+      const ids = new Set<string>();
+      let skip = 0;
+      let expectedTotal = total;
+      while (skip < Math.max(expectedTotal, 1)) {
+        const resp = await creatorService.getAll(...buildCurrentListQuery(skip, batchSize));
+        const items = resp.items || [];
+        items.forEach((item: any) => ids.add(String(item.id)));
+        expectedTotal = Number(resp.total || expectedTotal || 0);
+        if (items.length < batchSize) break;
+        skip += items.length;
+      }
+      setSelectedIds(ids);
+      notify(`已选中全部 ${ids.size} 条红人数据`, 'success');
+    } catch (err) {
+      console.error('Select all across pages failed', err);
+      notify('全选全部红人失败，请重试', 'error');
+    } finally {
+      setSelectingAllPages(false);
+    }
+  };
+
+  const handleOpenBatchTagModal = () => {
+    if (selectedIds.size === 0) return;
+    setTagInput('');
+    setTagModalOpen(true);
+  };
+
+  const handleBatchAddTags = async () => {
+    const tags = normalizeTags(tagInput);
+    if (tags.length === 0) {
+      notify('请输入至少一个标签', 'warning');
+      return;
+    }
+    setTagSaving(true);
+    try {
+      const result = await creatorService.batchUpdateTags(Array.from(selectedIds), tags, 'merge');
+      await fetchInfluencers();
+      notify(`已为 ${result?.updated ?? selectedIds.size} 位红人添加标签`, 'success');
+      setTagModalOpen(false);
+      setTagInput('');
+    } catch (err) {
+      console.error('Batch add tags failed', err);
+      notify('批量添加标签失败，请重试', 'error');
+    } finally {
+      setTagSaving(false);
+    }
+  };
+
   const totalPages = Math.ceil(total / pageSize);
+  const allCurrentPageSelected = influencers.length > 0 && influencers.every((inf) => selectedIds.has(inf.id));
+  const allMatchingSelected = total > 0 && selectedIds.size >= total;
 
   const activeFiltersCount = [
     hasEmail !== 'all',
     hasShareLink !== 'all',
+    locationFilter.trim() !== '',
     minFollowers !== '',
     maxFollowers !== ''
   ].filter(Boolean).length;
@@ -211,6 +297,7 @@ const InfluencerList: React.FC = () => {
   const clearFilters = () => {
     setHasEmail('all');
     setHasShareLink('all');
+    setLocationFilter('');
     setMinFollowers('');
     setMaxFollowers('');
   };
@@ -248,6 +335,27 @@ const InfluencerList: React.FC = () => {
              {selectedIds.size > 0 ? (
                <div className="flex items-center gap-3 w-full">
                  <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">已选择 {selectedIds.size} 项</span>
+                 {allCurrentPageSelected && total > selectedIds.size && (
+                   <button
+                     onClick={handleSelectAllAcrossPages}
+                     disabled={selectingAllPages}
+                     className="text-primary hover:text-primary/80 text-sm font-semibold disabled:opacity-60"
+                   >
+                     {selectingAllPages ? '全选中...' : `全选全部 ${total} 项`}
+                   </button>
+                 )}
+                 {allMatchingSelected && (
+                   <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
+                     已选全部
+                   </span>
+                 )}
+                 <button 
+                   onClick={handleOpenBatchTagModal}
+                   className="text-primary hover:text-primary/80 text-sm font-bold flex items-center gap-1 bg-primary/10 px-3 py-1 rounded-lg transition-colors"
+                 >
+                   <span className="material-symbols-outlined text-sm">sell</span>
+                   批量加标签
+                 </button>
                  <button 
                    onClick={handleBatchDelete}
                    className="text-red-500 hover:text-red-600 text-sm font-bold flex items-center gap-1 bg-red-50 dark:bg-red-900/20 px-3 py-1 rounded-lg transition-colors"
@@ -339,6 +447,21 @@ const InfluencerList: React.FC = () => {
                                     </div>
 
                                     <div className="space-y-1.5">
+                                        <label className="text-xs font-medium text-slate-500">国家/地区</label>
+                                        <CustomSelect
+                                            value={locationFilter}
+                                            onChange={setLocationFilter}
+                                            className="w-full"
+                                            searchable
+                                            searchPlaceholder="搜索国家/地区"
+                                            options={[
+                                              { value: '', label: '全部国家/地区' },
+                                              ...COUNTRY_OPTIONS_ZH.map((opt) => ({ value: opt.value, label: opt.label })),
+                                            ]}
+                                        />
+                                    </div>
+
+                                    <div className="space-y-1.5">
                                         <label className="text-xs font-medium text-slate-500">粉丝量范围</label>
                                         <div className="flex items-center gap-2">
                                             <input 
@@ -391,7 +514,7 @@ const InfluencerList: React.FC = () => {
         {loading ? (
             <div className="text-center p-10 text-slate-500">加载中...</div>
         ) : (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm flex flex-col h-full">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-visible shadow-sm flex flex-col h-full">
           <div className="flex-1 overflow-auto">
           <table className="w-full text-left border-collapse min-w-[1000px]">
             <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 z-10">
@@ -400,16 +523,16 @@ const InfluencerList: React.FC = () => {
                   <input 
                     className="rounded border-slate-300 text-primary focus:ring-primary cursor-pointer" 
                     type="checkbox"
-                    checked={influencers.length > 0 && selectedIds.size === influencers.length}
+                    checked={allCurrentPageSelected}
                     onChange={handleSelectAll}
                   />
                 </th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">用户名</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">粉丝数</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">地区</th>
+                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">标签</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">邮箱</th>
                 <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">ShareLink</th>
-                <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-slate-50 dark:bg-slate-800/50">状态</th>
                 <th className="py-3 px-4 text-right bg-slate-50 dark:bg-slate-800/50"></th>
               </tr>
             </thead>
@@ -448,6 +571,28 @@ const InfluencerList: React.FC = () => {
                     </div>
                   </td>
                   <td className="py-3 px-4">
+                    {inf.tags && inf.tags.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5 max-w-[180px]">
+                        {inf.tags.slice(0, 3).map((tag) => (
+                          <span
+                            key={`${inf.id}-${tag}`}
+                            className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-primary/10 text-primary border border-primary/20"
+                            title={tag}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {inf.tags.length > 3 && (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+                            +{inf.tags.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 text-sm">-</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4">
                     <div className="flex items-center gap-1.5">
                       <p className={`text-sm ${inf.email ? 'text-slate-600 dark:text-slate-400' : 'text-slate-400 dark:text-slate-500 italic'}`}>
                         {inf.email || '未找到邮箱'}
@@ -462,22 +607,6 @@ const InfluencerList: React.FC = () => {
                         </a>
                     ) : (
                         <span className="text-slate-400 text-sm">-</span>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">
-                    {inf.status !== 'none' && (
-                      <span className={`px-2 py-1 rounded-full text-[11px] font-bold border uppercase ${
-                        inf.status === 'sent' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200' :
-                        inf.status === 'replied' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-green-200' :
-                        'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200'
-                      }`}>
-                        {inf.status === 'sent' ? '已发送' : inf.status === 'replied' ? '已回复' : '跟进中'}
-                      </span>
-                    )}
-                    {inf.status === 'none' && (
-                      <span className="px-2 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 uppercase">
-                        未联系
-                      </span>
                     )}
                   </td>
                   <td className="py-3 px-4 text-right">
@@ -496,7 +625,7 @@ const InfluencerList: React.FC = () => {
           </div>
           
           {/* Pagination */}
-          <div className="border-t border-slate-200 dark:border-slate-800 p-4 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
+          <div className="relative z-20 border-t border-slate-200 dark:border-slate-800 p-4 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 overflow-visible">
             <div className="flex items-center gap-4 text-sm text-slate-500">
                 <span>共 {total} 条数据</span>
                 <div className="flex items-center gap-2">
@@ -504,7 +633,7 @@ const InfluencerList: React.FC = () => {
                   <CustomSelect
                     value={String(pageSize)}
                     onChange={(v) => setPageSize(Number(v))}
-                    className="min-w-[88px]"
+                    className="min-w-[88px] z-20"
                     options={[
                       { value: '10', label: '10' },
                       { value: '20', label: '20' },
@@ -546,6 +675,54 @@ const InfluencerList: React.FC = () => {
         title={modalConfig.title}
         message={modalConfig.message}
       />
+
+      {tagModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">批量添加标签</h3>
+                <p className="text-xs text-slate-500 mt-1">已选择 {selectedIds.size} 位红人，标签会与已有标签合并</p>
+              </div>
+              <button
+                onClick={() => !tagSaving && setTagModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                标签（支持多个）
+              </label>
+              <textarea
+                rows={4}
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                placeholder="示例：女装, 重点, 高意向"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm resize-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+              />
+              <p className="text-xs text-slate-400">支持英文逗号、中文逗号、分号、换行分隔</p>
+            </div>
+            <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex justify-end gap-2">
+              <button
+                onClick={() => setTagModalOpen(false)}
+                disabled={tagSaving}
+                className="px-4 py-2 rounded-lg text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-60"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleBatchAddTags}
+                disabled={tagSaving}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary/90 disabled:opacity-60"
+              >
+                {tagSaving ? '保存中...' : '确认添加'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

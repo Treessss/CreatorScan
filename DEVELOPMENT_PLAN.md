@@ -167,3 +167,21 @@ UI standardization follow-up delivered on 2026-02-21:
 - [x] Replaced frontend CRM native dropdowns with custom select components (single + multi select)
 - [x] Replaced Chrome extension native dialogs (`alert/confirm`) with custom modal/toast system (`popup/results/content`)
 - [x] Replaced Chrome extension task-platform native dropdown with custom dropdown
+
+TikTok task scraping refactor follow-up delivered on 2026-02-25:
+- [x] Changed TikTok task API interception flow to save minimal seed (`author id + handle + video id`) first, then auto-hydrate in background via video/profile HTML (`locationCreated` + `webapp.user-detail`)
+- [x] Fixed extension task keyword `collected` counter to use deduped saved rows instead of raw intercepted count
+- [x] Fixed location sync/display gap: extension push normalizes `location`, backend persists alias, CRM list/detail now read `locationCreated/region` fallback (no more forced `未知`)
+- [x] Fixed SMTP add/edit frontend flow closure: visible confirm-save action in settings form, password validation for create/test, and blank edit password no longer wipes stored SMTP password
+- [x] Converted SMTP add/edit to custom modal popup in settings and surfaced explicit app-password/authorization-code input field in modal form
+- [x] Added multi-tag support on extension push-to-server flow (custom push-tag modal) and backend creator push tag normalization/storage (`data.tags[]`)
+- [x] Extended TikTok task hydration fallback: when profile has external links but no email, auto-fetch external pages and recursively follow discovered social profile links (IG/YouTube/Facebook etc.) to backfill detected email
+- [x] Replaced batch-tab “深度挖掘” with retryable TikTok “自动补全” queue button (only targets未自动补全项, no hidden tabs) and added stop/status hooks
+- [x] Added one-click “删除无邮箱” buttons on plugin data board tabs (batch/imported/manual) to bulk purge creators missing email
+- [x] Added backend avatar persistence cache on creator push: download remote avatar URLs to local `/media/avatars/...`, rewrite stored `data.avatar` to stable local path, and CRM frontend now resolves backend media URLs
+- [x] Added extension-side local avatar persistence cache (data URL) for batch/imported/manual creators with background backfill queue so plugin dashboard avatars remain available after remote CDN links expire
+- [x] Updated CRM influencer list UX: removed status column, fixed pagination custom-select dropdown clipping, added “select all matching results” action, and added backend+frontend location filter support
+- [x] Refined CRM country filter dropdown: deduplicated alias/deprecated duplicate country entries (e.g. 英国/越南) and added in-dropdown search for country/region options
+- [x] Enhanced CRM creator list/detail presentation: list now shows creator tags, and detail page field keys are rendered with Chinese labels plus formatted values (links/tags/time/object values) for easier review
+- [x] Added creator tag management workflows in CRM: batch add tags for selected creators in list view, and single-creator add-tag modal in detail view (backend tag update APIs included)
+- [x] Optimized CRM detail page data presentation: only common fields shown by default, extra fields moved behind “查看更多”, and removed avg-views/CTR stat card block

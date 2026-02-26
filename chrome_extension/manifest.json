@@ -5,13 +5,16 @@
   "description": "Scrape influencer info (Email, ShareLinks) from TikTok, Instagram, and YouTube.",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
     "https://www.tiktok.com/*",
     "https://www.instagram.com/*",
-    "https://www.youtube.com/*"
+    "https://www.youtube.com/*",
+    "https://*/*",
+    "http://*/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -37,7 +40,10 @@
   "web_accessible_resources": [
     {
       "resources": ["injected.js"],
-      "matches": ["https://www.tiktok.com/*"]
+      "matches": [
+        "https://www.tiktok.com/*",
+        "https://www.instagram.com/*"
+      ]
     }
   ]
 }

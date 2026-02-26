@@ -1,11 +1,82 @@
-
-from sqlalchemy.orm import Session
-from app.domains.creator import repository, schemas
-import pandas as pd
+import hashlib
 from io import BytesIO
+from pathlib import Path
+import re
+from urllib.parse import urlparse
+
+import pandas as pd
+import requests
 from fastapi import UploadFile
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.domains.creator import repository, schemas
+
 
 class CreatorService:
+    _AVATAR_MAX_BYTES = 8 * 1024 * 1024
+    _AVATAR_TIMEOUT = (5, 10)
+    _AVATAR_EXT_BY_CONTENT_TYPE = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+        "image/avif": ".avif",
+        "image/svg+xml": ".svg",
+    }
+
+    @staticmethod
+    def _normalize_tags(value):
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            raw_items = re.split(r"[\n,，;；]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = list(value)
+        else:
+            raw_items = [value]
+
+        tags = []
+        seen = set()
+        for item in raw_items:
+            text = str(item).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            tags.append(text)
+        return tags
+
+    @staticmethod
+    def _normalize_creator_data_for_storage(data: dict | None) -> dict:
+        normalized = dict(data or {})
+
+        # Extension TikTok task hydration stores location in `locationCreated`;
+        # frontend CRM historically reads `location`.
+        if not normalized.get("location"):
+            normalized["location"] = (
+                normalized.get("locationCreated")
+                or normalized.get("region")
+                or normalized.get("country")
+                or None
+            )
+
+        tag_keys = ("tags", "Tags", "labels", "Labels", "tag", "Tag")
+        if "tags" not in normalized:
+            for key in ("Tags", "labels", "Labels", "tag", "Tag"):
+                if normalized.get(key):
+                    normalized["tags"] = normalized.get(key)
+                    break
+
+        if any(key in normalized for key in tag_keys):
+            normalized["tags"] = CreatorService._normalize_tags(normalized.get("tags"))
+
+        return normalized
+
     @staticmethod
     def _allowed_owner_ids(user):
         allowed_ids = [user.id]
@@ -14,9 +85,168 @@ class CreatorService:
         return allowed_ids
 
     @staticmethod
+    def _extract_existing_tags(data: dict | None):
+        payload = dict(data or {})
+        for key in ("tags", "Tags", "labels", "Labels", "tag", "Tag", "label", "Label"):
+            if key in payload and payload.get(key) is not None:
+                return CreatorService._normalize_tags(payload.get(key))
+        return []
+
+    @staticmethod
+    def _apply_tags_to_creator_data(data: dict | None, incoming_tags, mode: str = "merge") -> dict:
+        payload = dict(data or {})
+        normalized_incoming = CreatorService._normalize_tags(incoming_tags)
+        if mode == "replace":
+            payload["tags"] = normalized_incoming
+        else:
+            existing = CreatorService._extract_existing_tags(payload)
+            payload["tags"] = CreatorService._normalize_tags([*existing, *normalized_incoming])
+        return CreatorService._normalize_creator_data_for_storage(payload)
+
+    @staticmethod
+    def _slugify_path_part(value, fallback: str = "unknown"):
+        text = str(value or "").strip()
+        if not text:
+            return fallback
+        text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+        text = text.strip("._-")
+        return text or fallback
+
+    @staticmethod
+    def _is_remote_http_url(value: str | None) -> bool:
+        if not isinstance(value, str):
+            return False
+        parsed = urlparse(value.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+    @staticmethod
+    def _guess_avatar_extension(content_type: str | None, source_url: str) -> str:
+        content_type = (content_type or "").split(";")[0].strip().lower()
+        if content_type in CreatorService._AVATAR_EXT_BY_CONTENT_TYPE:
+            return CreatorService._AVATAR_EXT_BY_CONTENT_TYPE[content_type]
+
+        path_ext = Path(urlparse(source_url).path).suffix.lower()
+        if re.fullmatch(r"\.[a-z0-9]{1,5}", path_ext or ""):
+            return path_ext
+        return ".jpg"
+
+    @staticmethod
+    def _download_remote_avatar(url: str):
+        response = None
+        try:
+            response = requests.get(
+                url,
+                timeout=CreatorService._AVATAR_TIMEOUT,
+                stream=True,
+                headers={"User-Agent": "CreatorScan/1.0 (+avatar-cache)"},
+            )
+            if response.status_code != 200:
+                return None
+
+            content_type = (response.headers.get("Content-Type") or "").strip()
+            if not content_type.lower().startswith("image/"):
+                return None
+
+            chunks = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                chunks.extend(chunk)
+                if len(chunks) > CreatorService._AVATAR_MAX_BYTES:
+                    return None
+
+            if not chunks:
+                return None
+
+            ext = CreatorService._guess_avatar_extension(content_type, url)
+            return bytes(chunks), ext
+        except Exception as exc:
+            print(f"Avatar cache download failed for {url}: {exc}")
+            return None
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _cache_avatar_url(url: str, owner_id: int, platform: str, unique_id: str):
+        if not CreatorService._is_remote_http_url(url):
+            return None
+
+        media_prefix = (settings.MEDIA_URL_PREFIX or "/media").rstrip("/")
+        parsed = urlparse(url)
+        if parsed.path.startswith(f"{media_prefix}/"):
+            return parsed.path or url
+
+        downloaded = CreatorService._download_remote_avatar(url)
+        if not downloaded:
+            return None
+
+        content, ext = downloaded
+        owner_segment = CreatorService._slugify_path_part(owner_id, "0")
+        platform_segment = CreatorService._slugify_path_part(platform, "platform")
+        uid_segment = CreatorService._slugify_path_part(unique_id, "user")
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        filename = f"{uid_segment}_{digest}{ext}"
+
+        avatar_dir = Path(settings.MEDIA_ROOT) / "avatars" / owner_segment / platform_segment
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+
+        # Keep only the latest cached avatar for the same creator handle in this folder.
+        stale_glob = f"{uid_segment}_*"
+        for old_file in avatar_dir.glob(stale_glob):
+            if old_file.name == filename:
+                continue
+            if old_file.is_file():
+                try:
+                    old_file.unlink()
+                except OSError:
+                    pass
+
+        target = avatar_dir / filename
+        if not target.exists():
+            target.write_bytes(content)
+
+        return f"{media_prefix}/avatars/{owner_segment}/{platform_segment}/{filename}"
+
+    @staticmethod
+    def _persist_avatar_in_creator_data(data: dict | None, owner_id: int, platform: str, unique_id: str) -> dict:
+        normalized = dict(data or {})
+
+        avatar = normalized.get("avatar") or normalized.get("avatar_url") or normalized.get("avatarurl")
+        if not isinstance(avatar, str):
+            return normalized
+        avatar = avatar.strip()
+        if not avatar:
+            return normalized
+
+        cached_path = CreatorService._cache_avatar_url(avatar, owner_id, platform, unique_id)
+        if not cached_path:
+            return normalized
+
+        if cached_path != avatar and not normalized.get("avatar_source_url"):
+            normalized["avatar_source_url"] = avatar
+
+        normalized["avatar"] = cached_path
+        if normalized.get("avatar_url"):
+            normalized["avatar_url"] = cached_path
+        if normalized.get("avatarurl"):
+            normalized["avatarurl"] = cached_path
+        return normalized
+
+    @staticmethod
     def push_creators(db: Session, creators: list[schemas.CreatorCreate], user_id: int):
         saved_creators = []
         for creator in creators:
+            creator.data = CreatorService._normalize_creator_data_for_storage(creator.data)
+            creator.data = CreatorService._persist_avatar_in_creator_data(
+                creator.data,
+                owner_id=user_id,
+                platform=creator.platform,
+                unique_id=creator.unique_id,
+            )
             existing = repository.get_creator_by_platform_uid(db, user_id, creator.platform, creator.unique_id)
             if existing:
                 # Update data for existing
@@ -73,6 +303,7 @@ class CreatorService:
         signature_keys = ['signature', 'bio', 'description', '简介', '签名']
         timestamp_keys = ['timestamp', 'created_at', 'date', '时间', '时间戳']
         share_links_keys = ['sharelinks', 'share_links', 'links', '分享链接', 'sharelink', 'share_link', 'link']
+        tags_keys = ['tags', 'tag', 'labels', 'label', '标签']
         
         skipped_count = 0
         for idx, row in df.iterrows():
@@ -153,6 +384,14 @@ class CreatorService:
             if not data.get('signature'): data['signature'] = get_col_value(row, signature_keys)
             if not data.get('timestamp'): data['timestamp'] = get_col_value(row, timestamp_keys)
             if not data.get('shareLinks'): data['shareLinks'] = get_col_value(row, share_links_keys)
+            if not data.get('tags'): data['tags'] = get_col_value(row, tags_keys)
+            if not data.get('location'):
+                for key in ['location', 'Location', 'country', 'Country', 'region', 'Region', 'locationCreated', 'LocationCreated']:
+                    if data.get(key):
+                        data['location'] = data.get(key)
+                        break
+
+            data = CreatorService._normalize_creator_data_for_storage(data)
             
             creator_create = schemas.CreatorCreate(
                 platform=str(platform),
@@ -167,14 +406,50 @@ class CreatorService:
         return result
 
     @staticmethod
-    def get_creators(db: Session, user, skip: int = 0, limit: int = 100, search: str = None, has_email: bool = None, platform: str = None, has_sharelink: bool = None, min_followers: int = None, max_followers: int = None):
+    def get_creators(
+        db: Session,
+        user,
+        skip: int = 0,
+        limit: int = 100,
+        search: str = None,
+        has_email: bool = None,
+        platform: str = None,
+        location: str = None,
+        has_sharelink: bool = None,
+        min_followers: int = None,
+        max_followers: int = None,
+    ):
         # Determine owner_ids based on master/sub status
         if user.is_master:
             sub_ids = [sub.id for sub in user.sub_accounts]
             sub_ids.append(user.id)
-            creators, total = repository.get_creators_by_owner_ids(db, sub_ids, skip, limit, search, has_email, platform, has_sharelink, min_followers, max_followers)
+            creators, total = repository.get_creators_by_owner_ids(
+                db,
+                sub_ids,
+                skip,
+                limit,
+                search,
+                has_email,
+                platform,
+                location,
+                has_sharelink,
+                min_followers,
+                max_followers,
+            )
         else:
-            creators, total = repository.get_creators_by_owner_ids(db, [user.id], skip, limit, search, has_email, platform, has_sharelink, min_followers, max_followers)
+            creators, total = repository.get_creators_by_owner_ids(
+                db,
+                [user.id],
+                skip,
+                limit,
+                search,
+                has_email,
+                platform,
+                location,
+                has_sharelink,
+                min_followers,
+                max_followers,
+            )
         
         return {"items": creators, "total": total}
 
@@ -220,3 +495,49 @@ class CreatorService:
             return None
 
         return repository.update_creator_manual_status(db, creator, status)
+
+    @staticmethod
+    def update_creator_tags(db: Session, creator_id: int, tags, mode: str, user):
+        creator = repository.get_creator_by_id(db, creator_id)
+        if not creator:
+            return None
+
+        allowed_ids = CreatorService._allowed_owner_ids(user)
+        if creator.owner_id not in allowed_ids:
+            return None
+
+        next_data = CreatorService._apply_tags_to_creator_data(creator.data, tags, mode)
+        return repository.update_creator_data(db, creator, next_data)
+
+    @staticmethod
+    def batch_update_creator_tags(db: Session, creator_ids: list[int], tags, mode: str, user):
+        ids = []
+        seen = set()
+        for cid in creator_ids or []:
+            try:
+                num = int(cid)
+            except Exception:
+                continue
+            if num in seen:
+                continue
+            seen.add(num)
+            ids.append(num)
+
+        if not ids:
+            return {"updated": 0, "total": 0}
+
+        creators = db.query(repository.Creator).filter(repository.Creator.id.in_(ids)).all()
+        if len(creators) != len(ids):
+            return None
+
+        allowed_ids = set(CreatorService._allowed_owner_ids(user))
+        if any(c.owner_id not in allowed_ids for c in creators):
+            return None
+
+        for creator in creators:
+            creator.data = CreatorService._apply_tags_to_creator_data(creator.data, tags, mode)
+
+        db.commit()
+        for creator in creators:
+            db.refresh(creator)
+        return {"updated": len(creators), "total": len(ids)}

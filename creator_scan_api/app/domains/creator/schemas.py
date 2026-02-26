@@ -14,6 +14,15 @@ class CreatorCreate(CreatorBase):
 class CreatorStatusUpdate(BaseModel):
     status: Literal["none", "pending"]
 
+class CreatorTagsUpdate(BaseModel):
+    tags: List[str] | str
+    mode: Literal["merge", "replace"] = "merge"
+
+class CreatorBatchTagsUpdate(BaseModel):
+    creator_ids: List[int]
+    tags: List[str] | str
+    mode: Literal["merge", "replace"] = "merge"
+
 class CreatorResponse(CreatorBase):
     id: int
     owner_id: int
