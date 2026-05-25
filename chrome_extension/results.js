@@ -198,16 +198,19 @@ document.addEventListener('DOMContentLoaded', () => {
     function refreshBatchAutoHydrationUIForSelectedPlatform() {
         const config = getBatchAutoHydrationPlatformConfig();
         if (!config) {
-            updateBatchAutoHydrationUI(false);
+            updateBatchAutoHydrationUI({ isHydrating: false, queued: 0, active: 0, retrying: 0, failedFinal: 0 });
             return;
         }
         chrome.runtime.sendMessage({ action: config.statusAction }, (response) => {
             if (chrome.runtime.lastError) {
                 console.warn(`CreatorScan: ${config.statusAction} error`, chrome.runtime.lastError);
-                updateBatchAutoHydrationUI(false);
+                updateBatchAutoHydrationUI({ isHydrating: false, queued: 0, active: 0, retrying: 0, failedFinal: 0 });
                 return;
             }
-            updateBatchAutoHydrationUI(!!(response && response.isHydrating));
+            updateBatchAutoHydrationUI(response && typeof response === 'object'
+                ? response
+                : { isHydrating: false, queued: 0, active: 0, retrying: 0, failedFinal: 0 }
+            );
         });
     }
 
@@ -233,7 +236,20 @@ document.addEventListener('DOMContentLoaded', () => {
         let candidates = items.filter((c) => {
             if (!c || String(c.platform || '').toLowerCase() !== platformKey) return false;
             if (usingSelection && !selectedIds.includes(String(c.id))) return false;
-            if (c.taskHydrationStatus === 'success') return false; // Only incomplete items
+            const taskHydrationStatus = String(c.taskHydrationStatus || '').toLowerCase();
+            if (platformKey === 'instagram') {
+                const locationText = String(c.location || '').trim();
+                const hasCountry = !!(
+                    String(c.locationCode || '').trim() ||
+                    String(c.countryCode || '').trim() ||
+                    String(c.aboutThisAccountCountry || '').trim() ||
+                    String(c.countryName || '').trim() ||
+                    (locationText && /^[a-z]{2}$/i.test(locationText))
+                );
+                if (taskHydrationStatus === 'success' && hasCountry) return false;
+            } else if (taskHydrationStatus === 'success') {
+                return false;
+            }
             if (!c.id || !(c.uniqueId || c.userId)) return false;
             return true;
         });
@@ -247,9 +263,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Prioritize the newest rows first to improve visible completion speed.
         candidates = candidates.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
+        const hydrationBehaviorText = platformKey === 'instagram'
+            ? '会在后台打开主页标签页采集国家并自动关闭。'
+            : '不会打开后台标签页。';
         const msg = usingSelection
-            ? `开始自动补全 ${candidates.length} 个选中的未完成项目？（不会打开后台标签页）`
-            : `开始自动补全 ${candidates.length} 个未完成项目？（不会打开后台标签页）`;
+            ? `开始自动补全 ${candidates.length} 个选中的未完成项目？（${hydrationBehaviorText}）`
+            : `开始自动补全 ${candidates.length} 个未完成项目？（${hydrationBehaviorText}）`;
 
         if (!(await csConfirm(msg, `自动补全（${platformLabel}）`))) {
             return;
@@ -267,7 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     csAlert('没有可加入补全队列的数据。');
                     return;
                 }
-                updateBatchAutoHydrationUI(true);
+                refreshBatchAutoHydrationUIForSelectedPlatform();
                 if (usingSelection) {
                     document.querySelectorAll('.batch-checkbox:checked').forEach(cb => cb.checked = false);
                     document.getElementById('batch-select-all').checked = false;
@@ -343,8 +362,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return csAlert('当前平台暂不支持自动补全停止操作。');
         }
         if (await csConfirm('停止自动补全？队列中的待处理项会被取消，进行中的请求会在本轮结束。', '停止自动补全')) {
-            chrome.runtime.sendMessage({ action: config.stopAction });
-            updateBatchAutoHydrationUI(false);
+            chrome.runtime.sendMessage({ action: config.stopAction }, () => {
+                refreshBatchAutoHydrationUIForSelectedPlatform();
+            });
+            updateBatchAutoHydrationUI({ isHydrating: false, queued: 0, active: 0, retrying: 0, failedFinal: 0 });
         }
     }
 
@@ -362,6 +383,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     refreshBatchAutoHydrationUIForSelectedPlatform();
+    window.setInterval(() => {
+        refreshBatchAutoHydrationUIForSelectedPlatform();
+    }, 2000);
 
     // Listen for completion
     chrome.runtime.onMessage.addListener((request) => {
@@ -953,17 +977,85 @@ function updateEnrichmentUI(isEnriching, type) {
     }
 }
 
-function updateBatchAutoHydrationUI(isRunning) {
+function normalizeBatchAutoHydrationStatus(statusLike) {
+    const source = (statusLike && typeof statusLike === 'object')
+        ? statusLike
+        : { isHydrating: !!statusLike };
+    const asCount = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    };
+    const isHydrating = !!source.isHydrating;
+    const queued = asCount(source.queued);
+    const active = asCount(source.active);
+    const retrying = asCount(source.retrying);
+    const failedFinal = asCount(source.failedFinal);
+    const queuedMain = asCount(source.queuedMain);
+    const queuedCountry = asCount(source.queuedCountry);
+    const activeMain = asCount(source.activeMain);
+    const activeCountry = asCount(source.activeCountry);
+    const queuedCountryRetry = asCount(source.queuedCountryRetry);
+    const activeCountryRetry = asCount(source.activeCountryRetry);
+    const failedMainFinal = asCount(source.failedMainFinal);
+    const failedCountryFinal = asCount(source.failedCountryFinal);
+    return {
+        isHydrating,
+        queued,
+        active,
+        retrying,
+        failedFinal,
+        queuedMain,
+        queuedCountry,
+        activeMain,
+        activeCountry,
+        queuedCountryRetry,
+        activeCountryRetry,
+        failedMainFinal,
+        failedCountryFinal
+    };
+}
+
+function buildBatchAutoHydrationStatusText(config, status) {
+    if (!config) return '自动补全状态：当前平台暂不支持';
+    const parts = [
+        status.isHydrating ? '进行中' : '空闲',
+        `排队 ${status.queued}`,
+        `运行 ${status.active}`
+    ];
+    if (config.platform === 'instagram') {
+        parts.push(`主队列 ${status.queuedMain + status.activeMain}`);
+        parts.push(`国家队列 ${status.queuedCountry + status.activeCountry}`);
+        parts.push(`国家进行中 ${status.activeCountry}`);
+        parts.push(`国家重试中 ${status.queuedCountryRetry + status.activeCountryRetry}`);
+        parts.push(`国家最终失败 ${status.failedCountryFinal}`);
+        parts.push(`重试中 ${status.retrying}`);
+        parts.push(`最终失败 ${status.failedFinal}`);
+    }
+    return `${config.label} 自动补全：${parts.join(' · ')}`;
+}
+
+function updateBatchAutoHydrationUI(statusLike) {
     const runBtn = document.getElementById('enrich-batch');
     const stopBtn = document.getElementById('stop-enrich-batch');
+    const statusEl = document.getElementById('batch-auto-hydration-status');
     if (!runBtn || !stopBtn) return;
-    if (isRunning) {
+
+    const config = getBatchAutoHydrationPlatformConfig();
+    const status = normalizeBatchAutoHydrationStatus(statusLike);
+
+    if (status.isHydrating) {
         runBtn.style.display = 'none';
         stopBtn.style.display = 'inline-block';
     } else {
         runBtn.style.display = 'inline-block';
         stopBtn.style.display = 'none';
     }
+
+    if (!statusEl) return;
+    statusEl.textContent = buildBatchAutoHydrationStatusText(config, status);
+    statusEl.style.borderColor = status.isHydrating ? '#91caff' : '#d9d9d9';
+    statusEl.style.background = status.isHydrating ? '#e6f4ff' : '#fafafa';
+    statusEl.style.color = status.isHydrating ? '#0958d9' : '#595959';
 }
 
 async function deleteItems(type, ids) {
@@ -980,8 +1072,14 @@ async function deleteItems(type, ids) {
     if (type === 'batch' || type === 'imported') {
         items = items.filter(item => !ids.includes(String(item.id)));
     } else {
-        // Manual items might not have ID, use URL as ID
-        items = items.filter(item => !ids.includes(item.url));
+        items = items.filter((item) => {
+            const candidates = [
+                String(item?.url || ''),
+                String(item?.profileUrl || ''),
+                String(item?.id || '')
+            ].filter(Boolean);
+            return !candidates.some((id) => ids.includes(id));
+        });
     }
     
     if (items.length < initialLength) {
@@ -1050,10 +1148,21 @@ function getCreatorFollowerDisplay(item) {
 }
 
 function getCreatorLocationDisplay(item) {
-    const value = item?.location ?? item?.locationCreated ?? item?.region;
-    if (value === undefined || value === null) return '-';
-    const text = String(value).trim();
-    return text || '-';
+    const candidates = [
+        item?.location,
+        item?.locationCode,
+        item?.aboutThisAccountCountry,
+        item?.countryName,
+        item?.cityName,
+        item?.locationCreated,
+        item?.region
+    ];
+    for (const value of candidates) {
+        if (value === undefined || value === null) continue;
+        const text = String(value).trim();
+        if (text) return text;
+    }
+    return '-';
 }
 
 function getCreatorSignatureDisplay(item) {
@@ -1106,7 +1215,7 @@ async function loadImportedData() {
         const profileUrl = getCreatorProfileUrl(item);
         const profileLabel = getCreatorDisplayHandle(item);
         const location = getCreatorLocationDisplay(item);
-        const email = item.email || '-';
+        const email = String(item.email || '').trim();
         const links = item.shareLinks ? item.shareLinks.join(', ') : '-';
         const statusIcon = getCreatorTaskStatusIcon(item);
         const signature = getCreatorSignatureDisplay(item);
@@ -1241,20 +1350,40 @@ async function loadManualData() {
     
     data.forEach(item => {
         const tr = document.createElement('tr');
-        // Use URL as ID for manual items since they don't have explicit IDs
-        const idStr = item.url;
+        const idStr = String(item.url || item.profileUrl || item.id || '');
+        const profileUrl = getCreatorProfileUrl(item);
+        const profileLabel = getCreatorDisplayHandle(item);
+        const location = getCreatorLocationDisplay(item);
+        const email = item.email || '-';
+        const links = item.shareLinks ? item.shareLinks.join(', ') : '-';
+        const statusIcon = getCreatorTaskStatusIcon(item);
+        const signature = getCreatorSignatureDisplay(item);
+        const followerCount = getCreatorFollowerDisplay(item);
+        const displayName = getCreatorDisplayName(item);
+        const profileCell = profileUrl
+            ? `<a href="${escapeHtml(profileUrl)}" target="_blank">${escapeHtml(profileLabel)}</a>`
+            : escapeHtml(profileLabel);
         
         tr.innerHTML = `
             <td><input type="checkbox" class="manual-checkbox" data-id="${idStr}"></td>
-            <td>${item.platform}</td>
-            <td>${item.email ? `<a href="mailto:${item.email}">${item.email}</a>` : '-'}</td>
-            <td>${item.followers || '-'}</td>
-            <td>${formatLinks(item.shareLinks)}</td>
-            <td class="link-cell"><a href="${item.url}" target="_blank">查看主页</a></td>
-            <td style="font-size: 12px; color: #888;">${new Date(item.timestamp).toLocaleTimeString()}</td>
+            <td><img src="${escapeHtml(getDisplayAvatar(item))}" class="avatar-img"></td>
+            <td>${escapeHtml(displayName)} ${statusIcon}</td>
+            <td class="link-cell">${profileCell}</td>
+            <td>${escapeHtml(followerCount)}</td>
+            <td title="${escapeHtml(String(location))}">${escapeHtml(String(location))}</td>
+            <td>${email ? `<a href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : '-'}</td>
+            <td><div style="max-width: 150px; overflow:hidden; text-overflow:ellipsis; white-space: nowrap;" title="${escapeHtml(links)}">${escapeHtml(links)}</div></td>
+            <td title="${escapeHtml(signature)}">${truncate(signature, 50)}</td>
+            <td>${escapeHtml(item.platform || '-')}</td>
+            <td style="font-size: 12px; color: #888;">${item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '-'}</td>
             <td><button class="btn-danger btn-sm delete-single" data-type="manual" data-id="${idStr}">删除</button></td>
         `;
         tbody.appendChild(tr);
+
+        const avatarImg = tr.querySelector('.avatar-img');
+        if (avatarImg) {
+            avatarImg.addEventListener('error', handleAvatarImageError, { once: true });
+        }
     });
     
     attachCheckboxListeners('manual');

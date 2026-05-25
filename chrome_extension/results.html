@@ -192,6 +192,20 @@
             font-size: 12px;
         }
 
+        .batch-hydration-status {
+            display: inline-flex;
+            align-items: center;
+            margin-left: 4px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid #d9d9d9;
+            background: #fafafa;
+            color: #595959;
+            font-size: 12px;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+
         /* Table */
         .table-container {
             overflow-x: auto;
@@ -369,6 +383,7 @@
             <button id="refresh-batch" class="btn-primary">🔄 刷新</button>
             <button id="enrich-batch" class="btn-primary" style="background-color: #eb2f96; border-color: #eb2f96;">⚡ 自动补全 (未完成项)</button>
             <button id="stop-enrich-batch" class="btn-danger" style="display: none;">⏹ 停止补全</button>
+            <span id="batch-auto-hydration-status" class="batch-hydration-status">自动补全状态：空闲</span>
             <button id="delete-no-email-batch" class="btn-danger" style="background-color: #fa541c; border-color: #fa541c; color: #fff;">🧹 删除无邮箱</button>
             <button id="delete-selected-batch" class="btn-danger" style="display: none;">🗑 删除选中</button>
             <button id="export-batch" class="btn-success">📤 导出 CSV</button>
@@ -457,11 +472,15 @@
                 <thead>
                     <tr>
                         <th style="width: 30px;"><input type="checkbox" id="manual-select-all"></th>
-                        <th>平台</th>
-                        <th>邮箱</th>
+                        <th>头像</th>
+                        <th>昵称</th>
+                        <th>Handle (@ID)</th>
                         <th>粉丝数</th>
+                        <th>地理位置</th>
+                        <th>邮箱</th>
                         <th>外部链接</th>
-                        <th>个人主页</th>
+                        <th>签名</th>
+                        <th>平台</th>
                         <th>采集时间</th>
                         <th>操作</th>
                     </tr>

@@ -1,4 +1,4 @@
-
+import json
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
@@ -39,7 +39,20 @@ class Settings(BaseSettings):
     @classmethod
     def _parse_cors_origins(cls, value):
         if isinstance(value, str):
-            return [v.strip() for v in value.split(",") if v.strip()]
+            raw = value.strip()
+            if not raw:
+                return []
+            # Support JSON array format in env, e.g.
+            # CORS_ORIGINS=["http://localhost:5173","http://localhost:5174"]
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(v).strip() for v in parsed if str(v).strip()]
+                except Exception:
+                    pass
+            # Fallback to comma-separated format.
+            return [v.strip().strip("\"'") for v in raw.split(",") if v.strip()]
         return value
 
     def __init__(self, **kwargs):

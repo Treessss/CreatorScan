@@ -6,6 +6,7 @@
   "permissions": [
     "storage",
     "unlimitedStorage",
+    "tabs",
     "activeTab",
     "scripting"
   ],
@@ -31,10 +32,22 @@
     {
       "matches": [
         "https://www.tiktok.com/*",
+        "https://www.instagram.com/*"
+      ],
+      "js": ["injected.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.tiktok.com/*",
         "https://www.instagram.com/*",
         "https://www.youtube.com/*"
       ],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [

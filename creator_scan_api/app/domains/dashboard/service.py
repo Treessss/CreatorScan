@@ -4,13 +4,17 @@ from app.domains.dashboard import schemas
 from app.domains.creator.models import Creator
 from app.domains.email.models import EmailLog
 from datetime import datetime, timedelta, UTC
-import random
 
 
 def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 class DashboardService:
+    @staticmethod
+    def _count_rows(db: Session, id_column, *filters) -> int:
+        """Use COUNT(id) to avoid full-row subqueries on legacy schemas."""
+        return int(db.query(func.count(id_column)).filter(*filters).scalar() or 0)
+
     @staticmethod
     def _calc_trend(current: float, previous: float) -> tuple[str, bool]:
         if previous > 0:
@@ -26,51 +30,53 @@ class DashboardService:
         
         # 1. Stats Cards
         # New Creators Today
-        today_creators = db.query(Creator).filter(
+        today_creators = DashboardService._count_rows(db, Creator.id,
             Creator.owner_id == user_id,
             Creator.created_at >= today
-        ).count()
+        )
         
-        yesterday_creators = db.query(Creator).filter(
+        yesterday_creators = DashboardService._count_rows(db, Creator.id,
             Creator.owner_id == user_id,
             Creator.created_at >= yesterday,
             Creator.created_at < today
-        ).count()
+        )
         
         creator_trend, creator_is_up = DashboardService._calc_trend(today_creators, yesterday_creators)
         
         # Emails Sent (Total)
-        total_emails = db.query(EmailLog).filter(EmailLog.sender_id == user_id, EmailLog.status == "sent").count()
-        today_emails = db.query(EmailLog).filter(
+        total_emails = DashboardService._count_rows(
+            db, EmailLog.id, EmailLog.sender_id == user_id, EmailLog.status == "sent"
+        )
+        today_emails = DashboardService._count_rows(db, EmailLog.id,
             EmailLog.sender_id == user_id,
             EmailLog.status == "sent",
             EmailLog.sent_at >= today
-        ).count()
-        yesterday_emails = db.query(EmailLog).filter(
+        )
+        yesterday_emails = DashboardService._count_rows(db, EmailLog.id,
             EmailLog.sender_id == user_id,
             EmailLog.status == "sent",
             EmailLog.sent_at >= yesterday,
             EmailLog.sent_at < today
-        ).count()
+        )
         email_trend, email_is_up = DashboardService._calc_trend(today_emails, yesterday_emails)
         
         # Reply Rate
-        replied_emails = db.query(EmailLog).filter(
+        replied_emails = DashboardService._count_rows(db, EmailLog.id,
             EmailLog.sender_id == user_id,
             EmailLog.replied == True
-        ).count()
+        )
         reply_rate = f"{(replied_emails / total_emails * 100):.1f}%" if total_emails > 0 else "0%"
-        today_replied = db.query(EmailLog).filter(
+        today_replied = DashboardService._count_rows(db, EmailLog.id,
             EmailLog.sender_id == user_id,
             EmailLog.replied == True,
             EmailLog.sent_at >= today
-        ).count()
-        yesterday_replied = db.query(EmailLog).filter(
+        )
+        yesterday_replied = DashboardService._count_rows(db, EmailLog.id,
             EmailLog.sender_id == user_id,
             EmailLog.replied == True,
             EmailLog.sent_at >= yesterday,
             EmailLog.sent_at < today
-        ).count()
+        )
         today_reply_rate = (today_replied / today_emails * 100) if today_emails > 0 else 0
         yesterday_reply_rate = (yesterday_replied / yesterday_emails * 100) if yesterday_emails > 0 else 0
         reply_trend, reply_is_up = DashboardService._calc_trend(today_reply_rate, yesterday_reply_rate)
@@ -137,11 +143,11 @@ class DashboardService:
         for i in range(6, -1, -1):
             day_start = today - timedelta(days=i)
             day_end = day_start + timedelta(days=1)
-            count = db.query(Creator).filter(
+            count = DashboardService._count_rows(db, Creator.id,
                 Creator.owner_id == user_id,
                 Creator.created_at >= day_start,
                 Creator.created_at < day_end
-            ).count()
+            )
             leads_trend.append(schemas.ActivityStat(
                 name=days_map[day_start.weekday()],
                 count=count

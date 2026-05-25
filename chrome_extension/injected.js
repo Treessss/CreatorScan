@@ -1,9 +1,30 @@
 (function() {
+    window.__creatorScanInjectedReady = true;
+    window.__creatorScanInjectedReadyAt = Date.now();
+    try {
+        document.documentElement.setAttribute('data-creator-scan-injected-ready', '1');
+        document.documentElement.setAttribute(
+            'data-creator-scan-injected-ready-at',
+            String(window.__creatorScanInjectedReadyAt)
+        );
+    } catch (e) {}
     console.log('CreatorScan: Injected script loaded');
+    try {
+        window.postMessage({
+            type: 'CREATOR_SCAN_INJECTED_BRIDGE_READY',
+            at: window.__creatorScanInjectedReadyAt,
+            href: window.location.href
+        }, '*');
+    } catch (e) {}
 
     const INSTAGRAM_SERP_KEY = 'xdt_fbsearch__top_serp_graphql';
     const INSTAGRAM_PROFILE_PACKET_KIND = 'profile_page';
     const INSTAGRAM_SEARCH_PACKET_KIND = 'search_serp';
+    const INSTAGRAM_TOP_SERP_PACKET_KIND = 'search_top_serp_web';
+    const INSTAGRAM_ABOUT_THIS_ACCOUNT_WBLOKS_APPID = 'com.bloks.www.ig.about_this_account';
+    const INSTAGRAM_ABOUT_THIS_ACCOUNT_PAGE_CONTEXT_FETCH_REQUEST = 'CREATOR_SCAN_INSTAGRAM_ABOUT_THIS_ACCOUNT_FETCH_REQUEST';
+    const INSTAGRAM_ABOUT_THIS_ACCOUNT_PAGE_CONTEXT_FETCH_RESPONSE = 'CREATOR_SCAN_INSTAGRAM_ABOUT_THIS_ACCOUNT_FETCH_RESPONSE';
+    const INSTAGRAM_WEB_APP_ID = '936619743392459';
 
     function isTikTokSearchApiUrl(url) {
         return !!(url && (url.includes('full/') || url.includes('search_item')));
@@ -13,16 +34,93 @@
         return !!(url && url.includes('instagram.com/graphql/query'));
     }
 
+    function isInstagramTopSerpUrl(url) {
+        if (!url) return false;
+        try {
+            const parsed = new URL(url, window.location.origin);
+            return /\/api\/v1\/fbsearch\/web\/top_serp\/?$/.test(String(parsed.pathname || ''));
+        } catch (e) {
+            return String(url).includes('/api/v1/fbsearch/web/top_serp/');
+        }
+    }
+
+    function isInstagramAboutThisAccountWbloksUrl(url) {
+        if (!url) return false;
+        try {
+            const parsed = new URL(url, window.location.origin);
+            const path = String(parsed.pathname || '');
+            if (!/\/async\/wbloks\/fetch\/?$/.test(path)) return false;
+            return parsed.searchParams.get('appid') === INSTAGRAM_ABOUT_THIS_ACCOUNT_WBLOKS_APPID;
+        } catch (e) {
+            const text = String(url);
+            return (
+                /\/async\/wbloks\/fetch\/?/i.test(text) &&
+                text.includes(`appid=${INSTAGRAM_ABOUT_THIS_ACCOUNT_WBLOKS_APPID}`)
+            );
+        }
+    }
+
+    function getInstagramPacketMatchDiagnostics(payload) {
+        const responseData = payload && payload.response;
+        const forcedPacketKind = typeof payload?.packetKind === 'string' ? payload.packetKind : '';
+        const isSearchPacket = !!(responseData && typeof responseData === 'object' && hasNestedKey(responseData, INSTAGRAM_SERP_KEY));
+        const topSerpByForcedPacketKind = forcedPacketKind === INSTAGRAM_TOP_SERP_PACKET_KIND;
+        const topSerpByUrl = isInstagramTopSerpUrl(payload?.url);
+        const topSerpByMediaGridSections = !!(
+            responseData &&
+            typeof responseData === 'object' &&
+            responseData.media_grid &&
+            typeof responseData.media_grid === 'object' &&
+            Array.isArray(responseData.media_grid.sections)
+        );
+        const isTopSerpPacket = !!(
+            topSerpByForcedPacketKind ||
+            topSerpByUrl ||
+            topSerpByMediaGridSections
+        );
+        const profileUser = responseData?.data?.user;
+        const profileByUserShape = !!(
+            profileUser &&
+            typeof profileUser === 'object' &&
+            profileUser.username &&
+            (
+                profileUser.follower_count !== undefined ||
+                profileUser.biography !== undefined ||
+                profileUser.profile_pic_url
+            )
+        );
+        const isProfilePacket = !!profileByUserShape;
+
+        return {
+            forcedPacketKind,
+            isSearchPacket,
+            isTopSerpPacket,
+            isProfilePacket,
+            topSerpByForcedPacketKind,
+            topSerpByUrl,
+            topSerpByMediaGridSections,
+            profileByUserShape,
+            profileUsername: isProfilePacket ? String(profileUser.username || '') : null
+        };
+    }
+
     function parseUrlDetails(url) {
         if (!url) return { url: '', path: '', query: {} };
         try {
             const parsed = new URL(url, window.location.origin);
             const keepParams = [
                 'q',
+                'query',
                 'query_hash',
                 'doc_id',
                 'variables',
-                'fb_api_req_friendly_name'
+                'fb_api_req_friendly_name',
+                'search_session_id',
+                'next_max_id',
+                'rank_token',
+                'appid',
+                'type',
+                '__bkv'
             ];
             const query = {};
             keepParams.forEach((key) => {
@@ -116,48 +214,380 @@
         return undefined;
     }
 
+    function findInstagramAboutThisAccountFieldInitial(node, targetKey, seen) {
+        if (!node || typeof node !== 'object') return undefined;
+        const guard = seen || new WeakSet();
+        if (guard.has(node)) return undefined;
+        guard.add(node);
+
+        if (node.data && typeof node.data === 'object' && node.data.key === targetKey) {
+            if (node.data.initial !== undefined && node.data.initial !== null) {
+                return node.data.initial;
+            }
+        }
+
+        if (Array.isArray(node)) {
+            for (const item of node) {
+                const found = findInstagramAboutThisAccountFieldInitial(item, targetKey, guard);
+                if (found !== undefined) return found;
+            }
+            return undefined;
+        }
+
+        for (const value of Object.values(node)) {
+            const found = findInstagramAboutThisAccountFieldInitial(value, targetKey, guard);
+            if (found !== undefined) return found;
+        }
+        return undefined;
+    }
+
+    function parseInstagramAboutThisAccountCountryFromWbloksResponseText(text) {
+        const source = String(text || '').trim();
+        if (!source) return null;
+        const payloadText = source.startsWith('for (;;);') ? source.slice('for (;;);'.length) : source;
+        let data;
+        try {
+            data = JSON.parse(payloadText);
+        } catch (e) {
+            return null;
+        }
+        const country = findInstagramAboutThisAccountFieldInitial(
+            data,
+            'IG_ABOUT_THIS_ACCOUNT:about_this_account_country'
+        );
+        if (country == null) return null;
+        const value = String(country).trim();
+        return value || null;
+    }
+
+    function parseInstagramWbloksErrorFromResponseText(text) {
+        const source = String(text || '').trim();
+        if (!source) return null;
+        const payloadText = source.startsWith('for (;;);') ? source.slice('for (;;);'.length) : source;
+        let data;
+        try {
+            data = JSON.parse(payloadText);
+        } catch (e) {
+            return null;
+        }
+        if (!data || typeof data !== 'object') return null;
+        if (data.error == null) return null;
+        return {
+            code: data.error,
+            summary: data.errorSummary ? String(data.errorSummary) : null,
+            description: data.errorDescription ? String(data.errorDescription) : null
+        };
+    }
+
+    function buildJazoestFromFBDtsgToken(token) {
+        const text = String(token || '');
+        if (!text) return null;
+        let sum = 0;
+        for (let i = 0; i < text.length; i++) sum += text.charCodeAt(i);
+        return `2${sum}`;
+    }
+
+    function getModuleExport(name) {
+        if (typeof window.require !== 'function') {
+            throw new Error('require unavailable');
+        }
+        return window.require(name);
+    }
+
+    function getAsyncParamsForPost() {
+        const exported = getModuleExport('getAsyncParams');
+        if (typeof exported === 'function') {
+            return exported('POST');
+        }
+        if (exported && typeof exported.getAsyncParams === 'function') {
+            return exported.getAsyncParams('POST');
+        }
+        throw new Error('getAsyncParams export unsupported');
+    }
+
+    function normalizeWbloksFormValue(value) {
+        if (value == null) return null;
+        if (typeof value === 'string') {
+            const text = value.trim();
+            return text || null;
+        }
+        if (typeof value === 'number' || typeof value === 'boolean') {
+            return String(value);
+        }
+        return null;
+    }
+
+    function pickAboutThisAccountWbloksFormForDebug(form) {
+        const keepKeys = [
+            '__d', '__user', '__a', '__req', '__hs', 'dpr', '__ccg', '__rev', '__s', '__hsi',
+            '__dyn', '__csr', '__hsdp', '__hblp', '__sjsp', '__comet_req',
+            'fb_dtsg', 'jazoest', 'lsd', '__spin_r', '__spin_b', '__spin_t', '__crn', 'params'
+        ];
+        const out = {};
+        for (const key of keepKeys) {
+            if (!Object.prototype.hasOwnProperty.call(form, key)) continue;
+            out[key] = form[key];
+        }
+        return out;
+    }
+
+    async function runInstagramAboutThisAccountPageContextFetch(payload) {
+        const targetUserId = String(payload?.targetUserId || '').trim();
+        if (!targetUserId) throw new Error('missing targetUserId');
+
+        const refererType = String(payload?.refererType || 'ProfileMore').trim() || 'ProfileMore';
+        const routeName = String(payload?.__crn || 'comet.igweb.PolarisProfilePostsTabRoute').trim() || 'comet.igweb.PolarisProfilePostsTabRoute';
+        const profileUrl = String(payload?.profileUrl || '').trim();
+
+        const asyncParamsRaw = getAsyncParamsForPost();
+        if (!asyncParamsRaw || typeof asyncParamsRaw !== 'object') {
+            throw new Error('getAsyncParams returned invalid payload');
+        }
+
+        const DTSG = getModuleExport('DTSG');
+        const LSD = getModuleExport('LSD');
+        const SiteData = getModuleExport('SiteData');
+
+        const fbDtsg = typeof DTSG?.getToken === 'function'
+            ? String(DTSG.getToken() || '').trim()
+            : String(DTSG?.token || '').trim();
+        const lsd = String(LSD?.token || '').trim();
+        const jazoest = buildJazoestFromFBDtsgToken(fbDtsg);
+
+        if (!fbDtsg || !lsd || !jazoest) {
+            throw new Error('missing DTSG/LSD runtime tokens');
+        }
+
+        const requestUrl = new URL('https://www.instagram.com/async/wbloks/fetch/');
+        requestUrl.searchParams.set('appid', INSTAGRAM_ABOUT_THIS_ACCOUNT_WBLOKS_APPID);
+        requestUrl.searchParams.set('type', 'app');
+
+        const bkv = normalizeWbloksFormValue(SiteData?.bl_hash_version) || normalizeWbloksFormValue(payload?.__bkv);
+        if (bkv) requestUrl.searchParams.set('__bkv', bkv);
+
+        const form = new URLSearchParams();
+        Object.entries(asyncParamsRaw).forEach(([key, value]) => {
+            const normalized = normalizeWbloksFormValue(value);
+            if (normalized == null) return;
+            form.set(key, normalized);
+        });
+
+        form.set('__d', form.get('__d') || 'www');
+        form.set('__a', '1');
+        form.set('__crn', routeName);
+        form.set('__user', form.get('__user') || '0');
+        form.set('fb_dtsg', fbDtsg);
+        form.set('lsd', lsd);
+        form.set('jazoest', jazoest);
+        form.set('params', JSON.stringify({
+            referer_type: refererType,
+            target_user_id: targetUserId
+        }));
+
+        const response = await originalFetch.call(window, requestUrl.toString(), {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            mode: 'cors',
+            referrer: profileUrl || undefined,
+            referrerPolicy: 'strict-origin-when-cross-origin',
+            headers: {
+                'accept': '*/*',
+                'content-type': 'application/x-www-form-urlencoded;charset=UTF-8'
+            },
+            body: form.toString()
+        });
+
+        const responseText = await response.text();
+        if (!response.ok) {
+            const wbloksError = parseInstagramWbloksErrorFromResponseText(responseText);
+            if (wbloksError && wbloksError.code != null) {
+                throw new Error(
+                    `wbloks HTTP ${response.status} ${response.statusText}` +
+                    ` | code ${wbloksError.code}` +
+                    (wbloksError.summary ? ` | ${wbloksError.summary}` : '') +
+                    (wbloksError.description ? ` | ${wbloksError.description}` : '')
+                );
+            }
+            throw new Error(`wbloks HTTP ${response.status} ${response.statusText}`);
+        }
+        const country = parseInstagramAboutThisAccountCountryFromWbloksResponseText(responseText);
+        if (!country) {
+            const wbloksError = parseInstagramWbloksErrorFromResponseText(responseText);
+            if (wbloksError && wbloksError.code != null) {
+                throw new Error(
+                    `wbloks error ${wbloksError.code}` +
+                    (wbloksError.summary ? ` ${wbloksError.summary}` : '') +
+                    (wbloksError.description ? ` ${wbloksError.description}` : '')
+                );
+            }
+            throw new Error('country not found in wbloks response');
+        }
+
+        return {
+            country,
+            request: {
+                url: requestUrl.toString(),
+                method: 'POST',
+                body: pickAboutThisAccountWbloksFormForDebug(Object.fromEntries(form.entries()))
+            },
+            responseText
+        };
+    }
+
+    function postInstagramAboutThisAccountPageContextFetchResponse(message) {
+        window.postMessage({
+            type: INSTAGRAM_ABOUT_THIS_ACCOUNT_PAGE_CONTEXT_FETCH_RESPONSE,
+            ...message
+        }, '*');
+    }
+
     function postInstagramPacket(payload) {
         const responseData = payload && payload.response;
-        if (!responseData || typeof responseData !== 'object') return;
+        const isTopSerpUrlMatch = isInstagramTopSerpUrl(payload?.url);
+        if (!responseData || typeof responseData !== 'object') {
+            if (isTopSerpUrlMatch || payload?.packetKind === INSTAGRAM_TOP_SERP_PACKET_KIND) {
+                console.warn('CreatorScan: Instagram top_serp matched URL but response is not object', {
+                    transport: payload?.transport,
+                    method: payload?.method,
+                    url: payload?.url,
+                    responseType: typeof responseData
+                });
+            }
+            return;
+        }
 
-        const isSearchPacket = hasNestedKey(responseData, INSTAGRAM_SERP_KEY);
-        const profileUser = responseData?.data?.user;
-        const isProfilePacket = !!(
-            profileUser &&
-            typeof profileUser === 'object' &&
-            profileUser.username &&
-            (
-                profileUser.follower_count !== undefined ||
-                profileUser.biography !== undefined ||
-                profileUser.profile_pic_url
-            )
+        const diagnostics = getInstagramPacketMatchDiagnostics(payload);
+        const {
+            forcedPacketKind,
+            isSearchPacket,
+            isTopSerpPacket,
+            isProfilePacket,
+            topSerpByForcedPacketKind,
+            topSerpByUrl,
+            topSerpByMediaGridSections,
+            profileUsername
+        } = diagnostics;
+
+        if (isTopSerpUrlMatch || forcedPacketKind === INSTAGRAM_TOP_SERP_PACKET_KIND) {
+            const matchedBuckets = [];
+            if (isSearchPacket) matchedBuckets.push('search_packet:xdt_fbsearch__top_serp_graphql');
+            if (isTopSerpPacket) {
+                if (topSerpByForcedPacketKind) matchedBuckets.push('top_serp_packet:forced_packetKind');
+                if (topSerpByUrl) matchedBuckets.push('top_serp_packet:url_match');
+                if (topSerpByMediaGridSections) matchedBuckets.push('top_serp_packet:media_grid.sections');
+            }
+            if (isProfilePacket) matchedBuckets.push('profile_packet:data.user');
+
+            console.log('CreatorScan: Instagram top_serp packet match diagnostics', {
+                transport: payload?.transport,
+                method: payload?.method,
+                url: payload?.url,
+                packetKind: forcedPacketKind || null,
+                matchedBuckets,
+                noBucketMatched: matchedBuckets.length === 0,
+                responseTopKeys: Object.keys(responseData || {}).slice(0, 30)
+            });
+        }
+
+        if (!isSearchPacket && !isTopSerpPacket && !isProfilePacket) {
+            if (isTopSerpUrlMatch || forcedPacketKind === INSTAGRAM_TOP_SERP_PACKET_KIND) {
+                console.warn('CreatorScan: Instagram top_serp URL matched but response did not satisfy any packet bucket', {
+                    transport: payload?.transport,
+                    method: payload?.method,
+                    url: payload?.url,
+                    isSearchPacket,
+                    isTopSerpPacket,
+                    isProfilePacket,
+                    responseTopKeys: Object.keys(responseData || {}).slice(0, 30)
+                });
+            }
+            return;
+        }
+
+        const packetKind = forcedPacketKind || (
+            isSearchPacket
+                ? INSTAGRAM_SEARCH_PACKET_KIND
+                : (isTopSerpPacket ? INSTAGRAM_TOP_SERP_PACKET_KIND : INSTAGRAM_PROFILE_PACKET_KIND)
         );
-
-        if (!isSearchPacket && !isProfilePacket) return;
 
         const serpNode = isSearchPacket ? findNestedValueByKey(responseData, INSTAGRAM_SERP_KEY) : null;
         const serpNodeSummary = (serpNode && typeof serpNode === 'object' && !Array.isArray(serpNode))
             ? Object.keys(serpNode).slice(0, 20)
             : Array.isArray(serpNode) ? `array(${serpNode.length})` : typeof serpNode;
+        const topSerpSectionCount = Array.isArray(responseData?.media_grid?.sections)
+            ? responseData.media_grid.sections.length
+            : null;
 
         window.postMessage({
             type: 'INSTAGRAM_GRAPHQL_RESPONSE',
             packet: {
+                ...payload,
                 matchedKey: isSearchPacket ? INSTAGRAM_SERP_KEY : null,
-                packetKind: isSearchPacket ? INSTAGRAM_SEARCH_PACKET_KIND : INSTAGRAM_PROFILE_PACKET_KIND,
+                packetKind: packetKind,
+                timestamp: Date.now()
+            }
+        }, '*');
+
+        console.log('CreatorScan: Intercepted Instagram packet', {
+            transport: payload.transport,
+            url: payload.url,
+            packetKind,
+            serpNodeSummary,
+            topSerpSectionCount,
+            profileUsername
+        });
+    }
+
+    function postInstagramAboutThisAccountWbloksPacket(payload) {
+        if (!payload || typeof payload !== 'object') return;
+        if (!payload.responseText || typeof payload.responseText !== 'string') return;
+
+        try {
+            const country = parseInstagramAboutThisAccountCountryFromWbloksResponseText(payload.responseText);
+            console.debug('CreatorScan: injected captured about_this_account wbloks packet', {
+                transport: payload.transport,
+                method: payload.method,
+                url: payload.url,
+                hasCountry: !!country,
+                country: country || null,
+                responseLength: String(payload.responseText || '').length
+            });
+        } catch (e) {}
+
+        window.postMessage({
+            type: 'INSTAGRAM_ABOUT_THIS_ACCOUNT_WBLOKS_RESPONSE',
+            packet: {
+                packetKind: 'about_this_account_wbloks',
                 timestamp: Date.now(),
                 ...payload
             }
         }, '*');
-
-        console.log('CreatorScan: Intercepted Instagram GraphQL packet', {
-            transport: payload.transport,
-            url: payload.url,
-            packetKind: isSearchPacket ? INSTAGRAM_SEARCH_PACKET_KIND : INSTAGRAM_PROFILE_PACKET_KIND,
-            serpNodeSummary,
-            profileUsername: isProfilePacket ? String(profileUser.username || '') : null
-        });
     }
+
+    window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || data.type !== INSTAGRAM_ABOUT_THIS_ACCOUNT_PAGE_CONTEXT_FETCH_REQUEST) return;
+
+        const requestId = data.requestId;
+        Promise.resolve()
+            .then(() => runInstagramAboutThisAccountPageContextFetch(data.payload || {}))
+            .then((result) => {
+                postInstagramAboutThisAccountPageContextFetchResponse({
+                    requestId,
+                    ok: true,
+                    result
+                });
+            })
+            .catch((error) => {
+                postInstagramAboutThisAccountPageContextFetchResponse({
+                    requestId,
+                    ok: false,
+                    error: String(error)
+                });
+            });
+    });
 
     async function readFetchRequestBody(resource, config) {
         try {
@@ -181,12 +611,23 @@
     const originalFetch = window.fetch;
     window.fetch = async function(...args) {
         const [resource, config] = args;
-        const url = resource instanceof Request ? resource.url : resource;
+        const requestUrl = resource instanceof Request ? resource.url : resource;
+        if (isInstagramTopSerpUrl(requestUrl)) {
+            console.log('CreatorScan: Instagram top_serp request matched in fetch:start', {
+                requestUrl: String(requestUrl || ''),
+                method: String(
+                    resource instanceof Request
+                        ? (resource.method || (config && config.method) || 'GET')
+                        : ((config && config.method) || 'GET')
+                ).toUpperCase()
+            });
+        }
 
         const response = await originalFetch.apply(this, args);
+        const responseUrl = response && typeof response.url === 'string' ? response.url : '';
 
         // TikTok search API
-        if (isTikTokSearchApiUrl(url)) {
+        if (isTikTokSearchApiUrl(requestUrl)) {
             const clone = response.clone();
             clone.json().then(data => {
                 console.log('CreatorScan: Intercepted Fetch data', data);
@@ -195,9 +636,12 @@
         }
 
         // Instagram GraphQL search packets (filtered by target key)
-        if (isInstagramGraphqlUrl(url)) {
+        const graphqlRequestMatched = isInstagramGraphqlUrl(requestUrl);
+        const graphqlResponseMatched = isInstagramGraphqlUrl(responseUrl);
+        const graphqlMatchedUrl = graphqlRequestMatched ? requestUrl : (graphqlResponseMatched ? responseUrl : null);
+        if (graphqlMatchedUrl) {
             const clone = response.clone();
-            const requestInfo = parseUrlDetails(url);
+            const requestInfo = parseUrlDetails(graphqlMatchedUrl);
             const method = resource instanceof Request
                 ? (resource.method || (config && config.method) || 'GET')
                 : ((config && config.method) || 'GET');
@@ -219,6 +663,88 @@
             }).catch(err => console.error('CreatorScan: Instagram fetch JSON parse error', err));
         }
 
+        const topSerpRequestMatched = isInstagramTopSerpUrl(requestUrl);
+        const topSerpResponseMatched = isInstagramTopSerpUrl(responseUrl);
+        const topSerpMatchedUrl = topSerpRequestMatched ? requestUrl : (topSerpResponseMatched ? responseUrl : null);
+        if (topSerpMatchedUrl) {
+            console.log('CreatorScan: Instagram top_serp URL matched in fetch', {
+                requestUrl: String(requestUrl || ''),
+                responseUrl: String(responseUrl || ''),
+                matchedUrl: String(topSerpMatchedUrl || ''),
+                matchedBy: topSerpRequestMatched ? 'request_url' : 'response_url'
+            });
+            const clone = response.clone();
+            const requestInfo = parseUrlDetails(topSerpMatchedUrl);
+            const method = resource instanceof Request
+                ? (resource.method || (config && config.method) || 'GET')
+                : ((config && config.method) || 'GET');
+            const requestBodyPromise = readFetchRequestBody(resource, config);
+
+            clone.json().then(async (data) => {
+                const requestBody = await requestBodyPromise;
+                postInstagramPacket({
+                    transport: 'fetch',
+                    packetKind: INSTAGRAM_TOP_SERP_PACKET_KIND,
+                    url: requestInfo.url,
+                    method: String(method || 'GET').toUpperCase(),
+                    request: {
+                        path: requestInfo.path,
+                        query: requestInfo.query,
+                        body: requestBody
+                    },
+                    response: data
+                });
+            }).catch(err => console.error('CreatorScan: Instagram top_serp fetch JSON parse error', err));
+        }
+
+        const aboutRequestMatched = isInstagramAboutThisAccountWbloksUrl(requestUrl);
+        const aboutResponseMatched = isInstagramAboutThisAccountWbloksUrl(responseUrl);
+        const aboutMatchedUrl = aboutRequestMatched ? requestUrl : (aboutResponseMatched ? responseUrl : null);
+
+        if (aboutMatchedUrl) {
+            const clone = response.clone();
+            const requestInfo = parseUrlDetails(aboutMatchedUrl);
+            const method = resource instanceof Request
+                ? (resource.method || (config && config.method) || 'GET')
+                : ((config && config.method) || 'GET');
+            const requestBodyPromise = readFetchRequestBody(resource, config);
+
+            if (!aboutRequestMatched && aboutResponseMatched) {
+                try {
+                    console.debug('CreatorScan: about_this_account matched by response.url fallback', {
+                        requestUrl: String(requestUrl || ''),
+                        responseUrl
+                    });
+                } catch (e) {}
+            }
+
+            clone.text().then(async (text) => {
+                const requestBody = await requestBodyPromise;
+                postInstagramAboutThisAccountWbloksPacket({
+                    transport: 'fetch',
+                    url: requestInfo.url,
+                    method: String(method || 'GET').toUpperCase(),
+                    request: {
+                        path: requestInfo.path,
+                        query: requestInfo.query,
+                        body: requestBody
+                    },
+                    responseText: text
+                });
+            }).catch((err) => console.error('CreatorScan: Instagram wbloks fetch text parse error', err));
+        } else {
+            const requestText = String(requestUrl || '');
+            const responseText = String(responseUrl || '');
+            if (requestText.includes('/async/wbloks/fetch') || responseText.includes('/async/wbloks/fetch')) {
+                try {
+                    console.debug('CreatorScan: wbloks fetch seen but appid did not match about_this_account', {
+                        requestUrl: requestText,
+                        responseUrl: responseText
+                    });
+                } catch (e) {}
+            }
+        }
+
         return response;
     };
 
@@ -227,12 +753,25 @@
     XMLHttpRequest.prototype.open = function(method, url) {
         this.__creatorScanMethod = method;
         this.__creatorScanUrl = url;
+        if (isInstagramTopSerpUrl(url)) {
+            console.log('CreatorScan: Instagram top_serp request matched in XHR.open', {
+                requestUrl: String(url || ''),
+                method: String(method || 'GET').toUpperCase()
+            });
+        }
         return originalXHROpen.apply(this, arguments);
     };
 
     const originalXHRSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function(body) {
         const requestBody = serializeRequestBody(body);
+        if (isInstagramTopSerpUrl(this.__creatorScanUrl)) {
+            console.log('CreatorScan: Instagram top_serp request matched in XHR.send', {
+                requestUrl: String(this.__creatorScanUrl || ''),
+                method: String(this.__creatorScanMethod || 'GET').toUpperCase(),
+                hasBody: body != null
+            });
+        }
         this.addEventListener('load', function() {
             const responseUrl = this.responseURL || this.__creatorScanUrl || '';
 
@@ -249,8 +788,16 @@
                  }
             }
 
-            // Instagram GraphQL search packets
-            if (isInstagramGraphqlUrl(responseUrl)) {
+            // Instagram GraphQL/top_serp packets
+            const isGraphqlResponse = isInstagramGraphqlUrl(responseUrl);
+            const isTopSerpResponse = isInstagramTopSerpUrl(responseUrl);
+            if (isGraphqlResponse || isTopSerpResponse) {
+                if (isTopSerpResponse) {
+                    console.log('CreatorScan: Instagram top_serp URL matched in XHR', {
+                        responseUrl: String(responseUrl || ''),
+                        method: String(this.__creatorScanMethod || 'GET').toUpperCase()
+                    });
+                }
                 try {
                     const data = (this.response && typeof this.response === 'object')
                         ? this.response
@@ -258,6 +805,7 @@
                     const requestInfo = parseUrlDetails(responseUrl);
                     postInstagramPacket({
                         transport: 'xhr',
+                        packetKind: isTopSerpResponse ? INSTAGRAM_TOP_SERP_PACKET_KIND : undefined,
                         url: requestInfo.url,
                         method: String(this.__creatorScanMethod || 'GET').toUpperCase(),
                         request: {
@@ -268,7 +816,26 @@
                         response: data
                     });
                 } catch (e) {
-                    console.error('CreatorScan: Instagram XHR parse error', e);
+                    console.error('CreatorScan: Instagram GraphQL/top_serp XHR parse error', e);
+                }
+            }
+
+            if (isInstagramAboutThisAccountWbloksUrl(responseUrl)) {
+                try {
+                    const requestInfo = parseUrlDetails(responseUrl);
+                    postInstagramAboutThisAccountWbloksPacket({
+                        transport: 'xhr',
+                        url: requestInfo.url,
+                        method: String(this.__creatorScanMethod || 'GET').toUpperCase(),
+                        request: {
+                            path: requestInfo.path,
+                            query: requestInfo.query,
+                            body: requestBody
+                        },
+                        responseText: typeof this.responseText === 'string' ? this.responseText : ''
+                    });
+                } catch (e) {
+                    console.error('CreatorScan: Instagram wbloks XHR parse error', e);
                 }
             }
         });

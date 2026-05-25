@@ -2,7 +2,9 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+import datetime
+from html import unescape
 
 import pandas as pd
 import requests
@@ -25,6 +27,21 @@ class CreatorService:
         "image/avif": ".avif",
         "image/svg+xml": ".svg",
     }
+    _AVATAR_CANDIDATE_KEYS = (
+        "avatar",
+        "avatar_url",
+        "avatarurl",
+        "avatarThumb",
+        "avatar_thumb",
+        "avatarMedium",
+        "avatar_medium",
+        "avatarLarger",
+        "avatar_larger",
+        "avatarLarge",
+        "avatar_large",
+        "profile_pic_url",
+        "profile_pic_url_hd",
+    )
 
     @staticmethod
     def _normalize_tags(value):
@@ -134,11 +151,31 @@ class CreatorService:
     def _download_remote_avatar(url: str):
         response = None
         try:
+            parsed = urlparse(url)
+            host = (parsed.netloc or "").lower()
+            referer = ""
+            if "instagram.com" in host:
+                referer = "https://www.instagram.com/"
+            elif "tiktokcdn" in host or "tiktok.com" in host:
+                referer = "https://www.tiktok.com/"
+
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+            if referer:
+                headers["Referer"] = referer
+
             response = requests.get(
                 url,
                 timeout=CreatorService._AVATAR_TIMEOUT,
                 stream=True,
-                headers={"User-Agent": "CreatorScan/1.0 (+avatar-cache)"},
+                headers=headers,
             )
             if response.status_code != 200:
                 return None
@@ -172,10 +209,19 @@ class CreatorService:
 
     @staticmethod
     def _cache_avatar_url(url: str, owner_id: int, platform: str, unique_id: str):
-        if not CreatorService._is_remote_http_url(url):
+        if not isinstance(url, str):
+            return None
+        url = url.strip()
+        if not url:
             return None
 
         media_prefix = (settings.MEDIA_URL_PREFIX or "/media").rstrip("/")
+        if url.startswith(f"{media_prefix}/"):
+            return url
+
+        if not CreatorService._is_remote_http_url(url):
+            return None
+
         parsed = urlparse(url)
         if parsed.path.startswith(f"{media_prefix}/"):
             return parsed.path or url
@@ -212,22 +258,204 @@ class CreatorService:
         return f"{media_prefix}/avatars/{owner_segment}/{platform_segment}/{filename}"
 
     @staticmethod
+    def _collect_avatar_candidates(data: dict | None) -> list[str]:
+        payload = dict(data or {})
+        candidates: list[str] = []
+        seen = set()
+
+        def _push(value):
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if not text:
+                return
+            key = text.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(text)
+
+        for key in CreatorService._AVATAR_CANDIDATE_KEYS:
+            _push(payload.get(key))
+
+        # Some payloads carry alternative avatar URLs as list values.
+        for key in ("avatarList", "avatar_list", "avatars"):
+            value = payload.get(key)
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    _push(item)
+
+        return candidates
+
+    @staticmethod
+    def _is_instagram_avatar_expired(url: str) -> bool:
+        if not CreatorService._is_remote_http_url(url):
+            return False
+        parsed = urlparse(url)
+        if "cdninstagram.com" not in (parsed.netloc or "").lower():
+            return False
+
+        oe = parse_qs(parsed.query).get("oe", [None])[0]
+        if not oe:
+            return False
+
+        try:
+            expiry_ts = int(oe, 16)
+        except Exception:
+            return False
+        now_ts = int(datetime.datetime.now(datetime.UTC).timestamp())
+        return expiry_ts <= now_ts
+
+    @staticmethod
+    def _extract_profile_avatar_url(platform: str, html_text: str) -> str | None:
+        if not html_text:
+            return None
+
+        if (platform or "").strip().lower() == "instagram":
+            patterns = [
+                r'"profile_pic_url_hd":"([^"]+)"',
+                r'"profile_pic_url":"([^"]+)"',
+                r'\\"profile_pic_url_hd\\":\\"([^"]+)\\"',
+                r'\\"profile_pic_url\\":\\"([^"]+)\\"',
+            ]
+        elif (platform or "").strip().lower() == "tiktok":
+            patterns = [
+                r'"avatarLarger":"([^"]+)"',
+                r'"avatarMedium":"([^"]+)"',
+                r'"avatarThumb":"([^"]+)"',
+                r'\\"avatarLarger\\":\\"([^"]+)\\"',
+                r'\\"avatarMedium\\":\\"([^"]+)\\"',
+                r'\\"avatarThumb\\":\\"([^"]+)\\"',
+            ]
+        else:
+            return None
+
+        for pattern in patterns:
+            match = re.search(pattern, html_text)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if not value:
+                continue
+            value = (
+                value.replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u0026", "&")
+            )
+            value = unescape(value)
+            if CreatorService._is_remote_http_url(value):
+                return value
+        return None
+
+    @staticmethod
+    def _fetch_instagram_avatar_via_profile_api(unique_id: str) -> str | None:
+        uid = str(unique_id or "").strip().lstrip("@")
+        if not uid:
+            return None
+
+        url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={uid}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-IG-App-ID": "936619743392459",
+            "Referer": f"https://www.instagram.com/{uid}/",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, timeout=CreatorService._AVATAR_TIMEOUT)
+            if response.status_code != 200:
+                return None
+
+            data = response.json() or {}
+            user_obj = (data.get("data") or {}).get("user") or {}
+            for key in ("profile_pic_url_hd", "profile_pic_url"):
+                value = user_obj.get(key)
+                if CreatorService._is_remote_http_url(value):
+                    return value
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _fetch_profile_avatar_url(platform: str, unique_id: str) -> str | None:
+        platform_name = (platform or "").strip().lower()
+        uid = str(unique_id or "").strip().lstrip("@")
+        if not uid:
+            return None
+
+        profile_url = None
+        if platform_name == "instagram":
+            api_avatar = CreatorService._fetch_instagram_avatar_via_profile_api(uid)
+            if api_avatar:
+                return api_avatar
+            profile_url = f"https://www.instagram.com/{uid}/"
+        elif platform_name == "tiktok":
+            profile_url = f"https://www.tiktok.com/@{uid}"
+        else:
+            return None
+
+        try:
+            response = requests.get(
+                profile_url,
+                timeout=CreatorService._AVATAR_TIMEOUT,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            if response.status_code != 200:
+                return None
+            return CreatorService._extract_profile_avatar_url(platform_name, response.text or "")
+        except Exception as exc:
+            print(f"Avatar profile fetch failed for {platform_name}:{uid}: {exc}")
+            return None
+
+    @staticmethod
     def _persist_avatar_in_creator_data(data: dict | None, owner_id: int, platform: str, unique_id: str) -> dict:
         normalized = dict(data or {})
 
-        avatar = normalized.get("avatar") or normalized.get("avatar_url") or normalized.get("avatarurl")
-        if not isinstance(avatar, str):
-            return normalized
-        avatar = avatar.strip()
-        if not avatar:
+        candidates = CreatorService._collect_avatar_candidates(normalized)
+        if not candidates:
             return normalized
 
-        cached_path = CreatorService._cache_avatar_url(avatar, owner_id, platform, unique_id)
+        cached_path = None
+        source_url = None
+        for candidate in candidates:
+            cached_path = CreatorService._cache_avatar_url(candidate, owner_id, platform, unique_id)
+            if cached_path:
+                source_url = candidate
+                break
+
+        if not cached_path:
+            platform_name = (platform or "").strip().lower()
+            need_refresh = platform_name in {"instagram", "tiktok"}
+            if need_refresh and platform_name == "instagram":
+                remote_candidates = [c for c in candidates if CreatorService._is_remote_http_url(c)]
+                if remote_candidates and not any(CreatorService._is_instagram_avatar_expired(c) for c in remote_candidates):
+                    need_refresh = False
+
+            if need_refresh:
+                refreshed = CreatorService._fetch_profile_avatar_url(platform, unique_id)
+                if refreshed:
+                    cached_path = CreatorService._cache_avatar_url(refreshed, owner_id, platform, unique_id)
+                    if cached_path:
+                        source_url = refreshed
+
         if not cached_path:
             return normalized
 
-        if cached_path != avatar and not normalized.get("avatar_source_url"):
-            normalized["avatar_source_url"] = avatar
+        if source_url and cached_path != source_url and not normalized.get("avatar_source_url"):
+            normalized["avatar_source_url"] = source_url
 
         normalized["avatar"] = cached_path
         if normalized.get("avatar_url"):

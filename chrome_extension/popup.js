@@ -57,6 +57,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const navItems = document.querySelectorAll('.nav-item');
     const views = {
         'tasks': document.getElementById('view-tasks'),
+        'manual': document.getElementById('view-manual'),
         'create': document.getElementById('view-create'),
         'data': document.getElementById('view-data')
     };
@@ -73,6 +74,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             views[target].classList.remove('hidden');
 
             if (target === 'tasks') renderTasks();
+            if (target === 'manual') updateManualRecordingStatus();
             if (target === 'data') updateStats();
         });
     });
@@ -89,6 +91,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!document.getElementById('view-data').classList.contains('hidden')) {
                 updateStats();
             }
+            if (!document.getElementById('view-manual').classList.contains('hidden')) {
+                updateManualRecordingStatus();
+            }
+        }
+    });
+
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (namespace !== 'local') return;
+        if (changes.creators || changes.batchCollectedCreators) {
+            if (!document.getElementById('view-data').classList.contains('hidden')) {
+                updateStats();
+            }
+        }
+        if (changes.isRecording || changes.creators) {
+            updateManualRecordingStatus();
         }
     });
 
@@ -371,13 +388,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- Data & Stats ---
     const btnOpenDashboard = document.getElementById('btn-open-dashboard');
+    const btnOpenDashboardManual = document.getElementById('btn-open-dashboard-manual');
     const btnExportCsv = document.getElementById('btn-export-csv');
     const btnClearData = document.getElementById('btn-clear-data');
     const totalProfilesEl = document.getElementById('total-profiles');
     const todayProfilesEl = document.getElementById('today-profiles');
+    const btnToggleRecording = document.getElementById('btn-toggle-recording');
+    const manualStatusBadgeEl = document.getElementById('manual-status-badge');
+    const manualStatusTextEl = document.getElementById('manual-status-text');
+    const manualTotalCountEl = document.getElementById('manual-total-count');
 
     btnOpenDashboard.addEventListener('click', () => {
         chrome.tabs.create({ url: 'results.html' });
+    });
+
+    btnOpenDashboardManual.addEventListener('click', () => {
+        chrome.tabs.create({ url: 'results.html' });
+    });
+
+    btnToggleRecording.addEventListener('click', async () => {
+        const { isRecording = false } = await chrome.storage.local.get('isRecording');
+        const next = !isRecording;
+        await chrome.storage.local.set({ isRecording: next });
+        await updateManualRecordingStatus();
+        csAlert(next ? '手动采集已开启，请在主页点击悬浮“采集”按钮。' : '手动采集已关闭。');
     });
 
     btnExportCsv.addEventListener('click', async () => {
@@ -413,6 +447,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         startOfDay.setHours(0,0,0,0);
         const todayCount = all.filter(c => c.timestamp >= startOfDay.getTime()).length;
         todayProfilesEl.textContent = todayCount;
+    }
+
+    async function updateManualRecordingStatus() {
+        const { isRecording = false, creators = [] } = await chrome.storage.local.get(['isRecording', 'creators']);
+        manualTotalCountEl.textContent = Array.isArray(creators) ? creators.length : 0;
+
+        if (isRecording) {
+            manualStatusBadgeEl.classList.remove('status-pending');
+            manualStatusBadgeEl.classList.add('status-running');
+            manualStatusBadgeEl.textContent = '已开启';
+            manualStatusTextEl.textContent = '已开启手动采集：在 TikTok / Instagram / YouTube 红人主页右下角点击“采集”悬浮按钮即可入库。';
+            btnToggleRecording.textContent = '关闭手动采集';
+            btnToggleRecording.style.backgroundColor = '#D60043';
+        } else {
+            manualStatusBadgeEl.classList.remove('status-running');
+            manualStatusBadgeEl.classList.add('status-pending');
+            manualStatusBadgeEl.textContent = '已关闭';
+            manualStatusTextEl.textContent = '开启后，在 TikTok / Instagram / YouTube 页面右下角会显示“采集”悬浮按钮。';
+            btnToggleRecording.textContent = '开启手动采集';
+            btnToggleRecording.style.backgroundColor = '';
+        }
     }
 
     // Helper functions (reused from old popup.js)
@@ -462,4 +517,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Initial render
     renderTasks();
+    updateStats();
+    updateManualRecordingStatus();
 });
